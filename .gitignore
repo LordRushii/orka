@@ -3,5 +3,6 @@ dist
 .output
 .wxt
 *.log
+*.tsbuildinfo
 bun.lockb.bak
 .DS_Store
