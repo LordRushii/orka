@@ -3,7 +3,7 @@
   "compilerOptions": {
     "composite": true,
     "outDir": "dist",
-    "types": ["node"]
+    "types": ["node", "bun"]
   },
   "include": ["src", "test"]
 }
