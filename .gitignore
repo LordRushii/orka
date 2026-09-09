@@ -1,0 +1,7 @@
+node_modules
+dist
+.output
+.wxt
+*.log
+bun.lockb.bak
+.DS_Store
