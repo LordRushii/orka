@@ -1,0 +1,150 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.panel__header h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.panel__subtitle {
+  margin: 2px 0 0;
+  color: #9aa0a6;
+  font-size: 0.8rem;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  background: #1f2126;
+  border: 1px solid #2c2f36;
+}
+
+.card--actions {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.meta {
+  font-size: 0.8rem;
+  color: #9aa0a6;
+}
+
+.badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  background: #33363d;
+  color: #e6e6e6;
+}
+
+.badge--idle {
+  background: #33363d;
+}
+.badge--scanning,
+.badge--planning {
+  background: #4a3d0f;
+  color: #ffd873;
+}
+.badge--sanitized,
+.badge--awaiting_approval {
+  background: #163a52;
+  color: #7cc7ff;
+}
+.badge--executing {
+  background: #163f2c;
+  color: #7ee2a8;
+}
+.badge--completed {
+  background: #163f2c;
+  color: #7ee2a8;
+}
+.badge--stopped {
+  background: #402a12;
+  color: #ffb066;
+}
+.badge--failed {
+  background: #45191c;
+  color: #ff8a8a;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field__label {
+  font-size: 0.75rem;
+  color: #9aa0a6;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.field select,
+.field textarea {
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #33363d;
+  background: #16171b;
+  color: #e6e6e6;
+  resize: vertical;
+}
+
+.field select:disabled,
+.field textarea:disabled {
+  opacity: 0.6;
+}
+
+.button {
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.button--primary {
+  background: #4c8bf5;
+  color: #08131f;
+}
+
+.button--ghost {
+  background: transparent;
+  border: 1px solid #45191c;
+  color: #ff8a8a;
+}
+
+.button--stop {
+  margin-left: auto;
+  background: #a5222c;
+  color: #fff0f0;
+}
+
+.panel__footnote {
+  margin: 0;
+  font-size: 0.72rem;
+  color: #6e737a;
+  line-height: 1.5;
+}
