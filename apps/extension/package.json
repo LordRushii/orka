@@ -1,6 +1,6 @@
 {
-  "name": "wxt-react-starter",
-  "description": "manifest.json description",
+  "name": "@orka/extension",
+  "description": "On-device privacy browser agent extension",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -15,6 +15,7 @@
     "postinstall": "wxt prepare"
   },
   "dependencies": {
+    "@orka/contracts": "workspace:*",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },
