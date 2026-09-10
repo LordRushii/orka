@@ -1,65 +1,63 @@
-import { useMemo, useState } from 'react';
-import type { TaskEventType, TaskState } from '@orka/contracts';
-import { useTaskSession } from './useTaskSession.ts';
-import './App.css';
+import { useMemo, useState } from "react";
+import type { TaskState } from "@orka/contracts";
+import { useTaskSession } from "./useTaskSession.ts";
+import type { RuntimeOverride } from "../../shared/messages.ts";
+import "./App.css";
 
 const PROVIDERS = [
-  { id: 'deepseek-v4-flash-vision-exp', label: 'DeepSeek (cloud, default)' },
-  { id: 'lmstudio-local', label: 'LM Studio (local)' },
+  { id: "deepseek-v4-flash-vision-exp", label: "DeepSeek (cloud, default)" },
+  { id: "lmstudio-local", label: "LM Studio (local)" },
 ] as const;
 
-const RUNTIMES = [
-  { id: 'auto', label: 'Auto' },
-  { id: 'gpu', label: 'GPU preferred' },
-  { id: 'balanced', label: 'Balanced' },
-  { id: 'wasm', label: 'CPU / WASM' },
-] as const;
+const RUNTIMES: readonly { id: RuntimeOverride; label: string }[] = [
+  { id: "auto", label: "Auto" },
+  { id: "gpu", label: "GPU preferred" },
+  { id: "balanced", label: "Balanced" },
+  { id: "wasm", label: "CPU / WASM" },
+];
 
 const STATE_LABEL: Record<TaskState, string> = {
-  idle: 'Idle',
-  scanning: 'Scanning locally',
-  sanitized: 'Sanitized context ready',
-  planning: 'Waiting on planner',
-  awaiting_approval: 'Awaiting your approval',
-  executing: 'Executing',
-  stopped: 'Stopped',
-  completed: 'Completed',
-  failed: 'Failed',
+  idle: "Idle",
+  scanning: "Scanning locally",
+  sanitized: "Sanitized context ready",
+  planning: "Waiting on planner",
+  awaiting_approval: "Awaiting your approval",
+  executing: "Executing",
+  stopped: "Stopped",
+  completed: "Completed",
+  failed: "Sanitization failed",
 };
 
-/** Happy-path event for the primary action button, per state. */
-const NEXT_EVENT: Partial<Record<TaskState, { event: TaskEventType; label: string }>> = {
-  idle: { event: 'START_SCAN', label: 'Start task' },
-  scanning: { event: 'SANITIZED', label: 'Mark sanitized (mock)' },
-  sanitized: { event: 'START_PLANNING', label: 'Send to planner' },
-  planning: { event: 'PLAN_READY', label: 'Plan ready (mock)' },
-  awaiting_approval: { event: 'APPROVE', label: 'Approve & execute' },
-  executing: { event: 'COMPLETE', label: 'Mark complete (mock)' },
-  stopped: { event: 'RESET', label: 'Start new task' },
-  completed: { event: 'RESET', label: 'Start new task' },
-  failed: { event: 'RESET', label: 'Start new task' },
-};
-
-/** Failure event exposed as a secondary control, per state. */
-const FAILURE_EVENT: Partial<Record<TaskState, { event: TaskEventType; label: string }>> = {
-  scanning: { event: 'SANITIZATION_FAILED', label: 'Report sanitization failure' },
-  planning: { event: 'PLAN_FAILED', label: 'Report planner failure' },
-  executing: { event: 'EXECUTION_FAILED', label: 'Report execution failure' },
-};
+function screenshotUrl(screenshot: { mimeType: string; dataBase64: string }): string {
+  return `data:${screenshot.mimeType};base64,${screenshot.dataBase64}`;
+}
 
 function App() {
-  const { state, actionCount, can, send, stop } = useTaskSession();
-  const [task, setTask] = useState('');
+  const {
+    state,
+    runtime,
+    audit,
+    observation,
+    failure,
+    requestError,
+    canStop,
+    start,
+    stop,
+    closeAudit,
+  } = useTaskSession();
+  const [task, setTask] = useState("");
   const [provider, setProvider] = useState<string>(PROVIDERS[0].id);
-  const [runtime, setRuntime] = useState<string>(RUNTIMES[0].id);
+  const [runtimeOverride, setRuntimeOverride] = useState<RuntimeOverride>("auto");
 
-  const started = state !== 'idle';
-  const canStop = can('STOP');
-  const primary = NEXT_EVENT[state];
-  const failure = FAILURE_EVENT[state];
-  const primaryDisabled = state === 'idle' && task.trim().length === 0;
-
+  const started = state === "scanning" || state === "sanitized" || state === "planning" ||
+    state === "awaiting_approval" || state === "executing";
+  const canStart = (state === "idle" || state === "stopped" || state === "failed" || state === "completed") &&
+    task.trim().length > 0;
   const badgeClass = useMemo(() => `badge badge--${state}`, [state]);
+
+  async function startTask() {
+    await start(task, runtimeOverride);
+  }
 
   return (
     <main className="panel">
@@ -71,10 +69,10 @@ function App() {
       <section className="card">
         <div className="status-row">
           <span className={badgeClass}>{STATE_LABEL[state]}</span>
-          {state === 'executing' && (
-            <span className="meta">{actionCount} / 10 actions</span>
-          )}
+          {runtime && <span className="meta">{runtime.mode}</span>}
         </div>
+        {requestError && <p className="error-text">{requestError}</p>}
+        {failure && <p className="error-text">{failure.message}</p>}
       </section>
 
       <section className="card">
@@ -96,9 +94,9 @@ function App() {
         <label className="field">
           <span className="field__label">Runtime</span>
           <select
-            value={runtime}
+            value={runtimeOverride}
             disabled={started}
-            onChange={(event) => setRuntime(event.target.value)}
+            onChange={(event) => setRuntimeOverride(event.target.value as RuntimeOverride)}
           >
             {RUNTIMES.map((option) => (
               <option key={option.id} value={option.id}>
@@ -121,39 +119,55 @@ function App() {
       </section>
 
       <section className="card card--actions">
-        {primary && (
-          <button
-            type="button"
-            className="button button--primary"
-            disabled={primaryDisabled}
-            onClick={() => send(primary.event)}
-          >
-            {primary.label}
+        {(state === "idle" || state === "stopped" || state === "failed" || state === "completed") && (
+          <button type="button" className="button button--primary" disabled={!canStart} onClick={() => void startTask()}>
+            {state === "idle" ? "Start task" : "Start new task"}
           </button>
         )}
-        {failure && (
-          <button
-            type="button"
-            className="button button--ghost"
-            onClick={() => send(failure.event)}
-          >
-            {failure.label}
+        {canStop && (
+          <button type="button" className="button button--stop" onClick={() => void stop()}>
+            Stop
           </button>
         )}
-        <button
-          type="button"
-          className="button button--stop"
-          disabled={!canStop}
-          onClick={() => stop()}
-        >
-          Stop
-        </button>
+        {state === "sanitized" && (
+          <button type="button" className="button button--ghost" onClick={() => void closeAudit()}>
+            Close local audit
+          </button>
+        )}
       </section>
 
+      {audit && observation && (
+        <section className="card audit">
+          <div className="status-row">
+            <h2>Local audit</h2>
+            <span className="meta">Not sent to a planner</span>
+          </div>
+          <div className="audit__images">
+            <figure>
+              <figcaption>Original (local only)</figcaption>
+              <img src={screenshotUrl(audit.originalScreenshot)} alt="Original active-tab capture" />
+            </figure>
+            <figure>
+              <figcaption>Redacted observation</figcaption>
+              <img src={screenshotUrl(audit.redactedScreenshot)} alt="Opaque redacted active-tab capture" />
+            </figure>
+          </div>
+          <p className="meta">
+            Sanitized origin: {observation.urlOrigin}. Runtime: {audit.runtime.mode}.
+          </p>
+          <div className="audit__summary">
+            {audit.redactionSummary.length === 0
+              ? "No sensitive regions detected."
+              : audit.redactionSummary.map((entry) => `${entry.category}: ${entry.count}`).join(" · ")}
+          </div>
+          <p className="panel__footnote">
+            The exact detection map and original pixels remain in extension memory and are released when this audit closes.
+          </p>
+        </section>
+      )}
+
       <p className="panel__footnote">
-        Phase 1 scaffold: capture, redaction, planning, and execution are
-        mocked here to exercise the Task Session state machine end to end.
-        Real behavior ships in later phases.
+        Phase 2 stops after local sanitization. Planner transport and browser actions are not enabled until Phase 3.
       </p>
     </main>
   );

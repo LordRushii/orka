@@ -16,6 +16,12 @@
   font-size: 0.8rem;
 }
 
+.error-text {
+  margin: 0;
+  color: #ff8a8a;
+  font-size: 0.82rem;
+}
+
 .card {
   display: flex;
   flex-direction: column;
@@ -147,4 +153,40 @@
   font-size: 0.72rem;
   color: #6e737a;
   line-height: 1.5;
+}
+
+.audit h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.audit__images {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.audit figure {
+  margin: 0;
+}
+
+.audit figcaption {
+  margin-bottom: 4px;
+  color: #9aa0a6;
+  font-size: 0.72rem;
+}
+
+.audit img {
+  display: block;
+  width: 100%;
+  max-height: 280px;
+  object-fit: contain;
+  background: #16171b;
+  border: 1px solid #33363d;
+  border-radius: 6px;
+}
+
+.audit__summary {
+  color: #d4d7dc;
+  font-size: 0.82rem;
 }

@@ -7,7 +7,11 @@ export default defineConfig({
     name: 'Orka — On-Device Privacy Browser Agent',
     description:
       'Locally redacts sensitive page content, then asks a selected planner to propose safe, user-approved browser actions.',
-    // Requested only for the active tab, and only once a task session begins.
-    permissions: ['activeTab', 'scripting', 'storage'],
+    // The toolbar action mints the temporary activeTab grant used by the
+    // background capture authority. No persistent site access is requested.
+    action: {
+      default_title: 'Open Orka',
+    },
+    permissions: ['activeTab', 'scripting', 'storage', 'sidePanel'],
   },
 });
