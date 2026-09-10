@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@orka/contracts": "workspace:*"
+    "@orka/contracts": "workspace:*",
+    "onnxruntime-web": "^1.29.0"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

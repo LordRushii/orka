@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@orka/contracts": "workspace:*",
+    "@orka/privacy-engine": "workspace:*",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },
