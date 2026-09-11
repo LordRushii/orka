@@ -17,6 +17,8 @@
   "dependencies": {
     "@orka/contracts": "workspace:*",
     "@orka/privacy-engine": "workspace:*",
+    "onnxruntime-web": "1.29.0",
+    "paddleocr": "1.2.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },

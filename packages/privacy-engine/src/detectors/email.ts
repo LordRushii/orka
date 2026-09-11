@@ -14,15 +14,16 @@ export function detectEmails(sources: TextSource[]): Detection[] {
   const detections: Detection[] = [];
   for (const source of sources) {
     EMAIL_REGEX.lastIndex = 0;
-    const match = EMAIL_REGEX.exec(source.text);
-    if (!match) continue;
-    detections.push({
-      category: "EMAIL",
-      confidence: 0.9,
-      source: source.origin,
-      box: source.box,
-      reason: "Text matches an email address shape.",
-    });
+    let match: RegExpExecArray | null;
+    while ((match = EMAIL_REGEX.exec(source.text)) !== null) {
+      detections.push({
+        category: "EMAIL",
+        confidence: 0.9,
+        source: source.origin,
+        box: source.box,
+        reason: "Text matches an email address shape.",
+      });
+    }
   }
   return detections;
 }

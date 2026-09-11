@@ -6,6 +6,7 @@ import {
   detectPan,
   detectPasswordFields,
   detectPhoneNumbers,
+  detectSensitiveFormFields,
   passesLuhnCheck,
   runDomDetectors,
 } from "../src/detectors";
@@ -159,6 +160,18 @@ describe("runDomDetectors", () => {
     const detections = runDomDetectors(snapshot);
     const categories = detections.map((d) => d.category).sort();
     expect(categories).toEqual(["EMAIL", "PASSWORD_FIELD", "PHONE"]);
+  });
+
+  describe("sensitive form fields", () => {
+    test("redacts email, phone, card, and government-id controls without reading values", () => {
+      const detections = detectSensitiveFormFields([
+        { id: "email", role: "textbox", accessibleName: "", box: { x: 0, y: 0, width: 10, height: 10 }, capabilities: ["type"], sensitivity: { inputType: "email" } },
+        { id: "phone", role: "textbox", accessibleName: "", box: { x: 0, y: 10, width: 10, height: 10 }, capabilities: ["type"], sensitivity: { autocomplete: "tel" } },
+        { id: "card", role: "textbox", accessibleName: "Card number", box: { x: 0, y: 20, width: 10, height: 10 }, capabilities: ["type"] },
+        { id: "id", role: "textbox", accessibleName: "Aadhaar number", box: { x: 0, y: 30, width: 10, height: 10 }, capabilities: ["type"] },
+      ]);
+      expect(detections.map((detection) => detection.category)).toEqual(["EMAIL", "PHONE", "CARD", "GOVT_ID"]);
+    });
   });
 
   test("drops detections below the category confidence threshold", () => {

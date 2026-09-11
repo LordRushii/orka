@@ -21,6 +21,7 @@ export {
   ModelIntegrityError,
   getManifestEntry,
   loadPinnedModel,
+  loadPinnedModelSet,
   sha256Hex,
   type FetchLike,
   type ModelManifest,
@@ -29,3 +30,4 @@ export {
 export type { ImageEncoder } from "./encoder";
 export * from "./pixel";
 export { sanitize, createPrivacyEngine, type SanitizeDependencies } from "./sanitize";
+export { ModelLoadFailedError } from "./sanitize";

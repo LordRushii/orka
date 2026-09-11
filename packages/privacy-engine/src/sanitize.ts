@@ -41,6 +41,13 @@ class SanitizationStageError extends Error {
   }
 }
 
+export class ModelLoadFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ModelLoadFailedError";
+  }
+}
+
 function failure(code: SanitizationFailureCode, message: string): SanitizationFailure {
   return { ok: false, code, message };
 }
@@ -60,6 +67,9 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
 function classifyDetectorError(label: string, error: unknown): SanitizationStageError {
   if (error instanceof SanitizationStageError) return error;
   if (error instanceof ModelIntegrityError) {
+    return new SanitizationStageError("MODEL_LOAD_FAILED", error.message);
+  }
+  if (error instanceof ModelLoadFailedError) {
     return new SanitizationStageError("MODEL_LOAD_FAILED", error.message);
   }
   const message = error instanceof Error ? error.message : `${label} failed.`;

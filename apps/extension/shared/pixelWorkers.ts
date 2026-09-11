@@ -1,0 +1,251 @@
+import {
+  FaceWorkerClient,
+  OcrWorkerClient,
+  loadPinnedModelSet,
+  type FaceDetector,
+  type TextRecognizer,
+  type WorkerLike,
+} from "@orka/privacy-engine";
+import type { RuntimeProfile } from "@orka/privacy-engine";
+
+type WorkerInitRequest = {
+  requestId: string;
+  type: "init";
+  mode: RuntimeProfile["mode"];
+  detector?: ArrayBuffer;
+  recognizer?: ArrayBuffer;
+  dictionary?: ArrayBuffer;
+  model?: ArrayBuffer;
+};
+
+type WorkerInitResponse = {
+  requestId: string;
+  type: "ready" | "error";
+  message?: string;
+};
+
+type PixelRpcMessage =
+  | { type: "PIXEL_INIT"; requestId: string; mode: RuntimeProfile["mode"] }
+  | { type: "PIXEL_OCR"; requestId: string; width: number; height: number; dataBase64: string }
+  | { type: "PIXEL_FACE"; requestId: string; width: number; height: number; dataBase64: string };
+
+// `browser.runtime.sendMessage` serializes with JSON semantics, not the
+// structured clone algorithm: an ArrayBuffer crosses as `{}` and a typed
+// array as a huge index-keyed object. Raster pixels only survive the
+// background -> side-panel hop as a base64 string, so encode on the way out
+// and rebuild the exact byte view on the way in.
+function rasterToBase64(data: Uint8ClampedArray): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < data.length; offset += chunkSize) {
+    const chunk = data.subarray(offset, Math.min(offset + chunkSize, data.length));
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+function base64ToRaster(base64: string): Uint8ClampedArray {
+  const binary = atob(base64);
+  const bytes = new Uint8ClampedArray(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+export type PixelWorkers = {
+  textRecognizer: TextRecognizer;
+  faceDetector: FaceDetector;
+  initialize(models: ReadonlyMap<string, ArrayBuffer>, profile: RuntimeProfile): Promise<void>;
+  dispose(): void;
+};
+
+function initializeWorker(
+  worker: WorkerLike<WorkerInitRequest, WorkerInitResponse>,
+  request: WorkerInitRequest,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      worker.removeEventListener("message", onMessage);
+      reject(new Error("Pixel worker initialization timed out."));
+    }, 30_000);
+
+    function onMessage(event: { data: WorkerInitResponse }) {
+      if (event.data.requestId !== request.requestId) return;
+      clearTimeout(timer);
+      worker.removeEventListener("message", onMessage);
+      if (event.data.type === "ready") resolve();
+      else reject(new Error(event.data.message ?? "Pixel worker initialization failed."));
+    }
+
+    worker.addEventListener("message", onMessage);
+    // Model buffers arrive through extension messaging and may be backed by a
+    // browser-specific ArrayBuffer implementation. Structured cloning is
+    // reliable across Chrome worker realms; only raster buffers use transfer
+    // lists in the request clients below.
+    worker.postMessage(request);
+  });
+}
+
+function workerUrl(name: "ocr" | "face"): string {
+  return browser.runtime.getURL(`${name}.js` as never);
+}
+
+/**
+ * The MV3 background service worker cannot create nested Workers. The
+ * side-panel document installs this host and performs the same local model
+ * work on behalf of the background through extension messaging.
+ */
+export function installPixelWorkerHost(): () => void {
+  if (typeof globalThis.Worker === "undefined") return () => {};
+  let ocrWorker: WorkerLike<WorkerInitRequest, WorkerInitResponse> | undefined;
+  let faceWorker: WorkerLike<WorkerInitRequest, WorkerInitResponse> | undefined;
+
+  const listener = (message: unknown, _sender: unknown, sendResponse: (response: unknown) => void) => {
+    if (!message || typeof message !== "object" || !("type" in message)) return undefined;
+    const request = message as PixelRpcMessage;
+    const respond = (promise: Promise<unknown>) => {
+      void promise.then(sendResponse, (error: unknown) =>
+        sendResponse({ ok: false, message: error instanceof Error ? error.message : String(error) }));
+    };
+    if (request.type === "PIXEL_INIT") {
+      respond((async () => {
+        (ocrWorker as (Worker & { terminate?: () => void }) | undefined)?.terminate?.();
+        (faceWorker as (Worker & { terminate?: () => void }) | undefined)?.terminate?.();
+        ocrWorker = new Worker(workerUrl("ocr"), { type: "module" }) as unknown as WorkerLike<WorkerInitRequest, WorkerInitResponse>;
+        faceWorker = new Worker(workerUrl("face"), { type: "module" }) as unknown as WorkerLike<WorkerInitRequest, WorkerInitResponse>;
+        // Load and verify the extension-local assets in the document that
+        // owns the workers. Large model buffers never cross runtime messaging.
+        const models = await loadPinnedModelSet();
+        const detector = models.get("paddleocr-detector");
+        const recognizer = models.get("paddleocr-recognizer");
+        const dictionary = models.get("paddleocr-dictionary");
+        const model = models.get("ultraface");
+        if (!detector || !recognizer || !dictionary || !model) throw new Error("The verified pixel model set is incomplete.");
+        await Promise.all([
+          initializeWorker(ocrWorker, { requestId: crypto.randomUUID(), type: "init", mode: request.mode, detector, recognizer, dictionary }),
+          initializeWorker(faceWorker, { requestId: crypto.randomUUID(), type: "init", mode: request.mode, model }),
+        ]);
+        return { ok: true };
+      })());
+      return true;
+    }
+    if (request.type === "PIXEL_OCR" || request.type === "PIXEL_FACE") {
+      const worker = request.type === "PIXEL_OCR" ? ocrWorker : faceWorker;
+      if (!worker) {
+        sendResponse({ ok: false, message: "Pixel workers are not initialized." });
+        return undefined;
+      }
+      if (request.type === "PIXEL_OCR") {
+        // Higher than the engine's own OCR budget so the engine-level timeout
+        // (with its clearer message) is the one that surfaces first.
+        const client = new OcrWorkerClient(worker as never, 30_000);
+        respond(client.recognize({
+          width: request.width,
+          height: request.height,
+          data: base64ToRaster(request.dataBase64),
+        }).then((value) => ({ ok: true, value })));
+      } else {
+        const client = new FaceWorkerClient(worker as never, 30_000);
+        respond(client.detect({
+          width: request.width,
+          height: request.height,
+          data: base64ToRaster(request.dataBase64),
+        }).then((value) => ({ ok: true, value })));
+      }
+      return true;
+    }
+    return undefined;
+  };
+  browser.runtime.onMessage.addListener(listener);
+  return () => {
+    browser.runtime.onMessage.removeListener(listener);
+    (ocrWorker as (Worker & { terminate?: () => void }) | undefined)?.terminate?.();
+    (faceWorker as (Worker & { terminate?: () => void }) | undefined)?.terminate?.();
+  };
+}
+
+/**
+ * Pixel runtimes stay in dedicated extension worker bundles. A scan is not
+ * allowed to proceed with empty detectors: missing bundles or failed model
+ * initialization must fail closed so the audit cannot claim complete masking.
+ */
+export function createPixelWorkers(): PixelWorkers {
+  const workerFactory = (path: string): WorkerLike<WorkerInitRequest, WorkerInitResponse> | undefined => {
+    if (typeof globalThis.Worker === "undefined") return undefined;
+    return new Worker(path, { type: "module" }) as unknown as WorkerLike<WorkerInitRequest, WorkerInitResponse>;
+  };
+  const ocrWorker = workerFactory(workerUrl("ocr"));
+  const faceWorker = workerFactory(workerUrl("face"));
+  const remote = !ocrWorker || !faceWorker;
+  const textRecognizer: TextRecognizer = ocrWorker
+    ? new OcrWorkerClient(ocrWorker as never)
+    : { async recognize(image) {
+      const response = await browser.runtime.sendMessage({
+        type: "PIXEL_OCR",
+        requestId: crypto.randomUUID(),
+        width: image.width,
+        height: image.height,
+        dataBase64: rasterToBase64(image.data),
+      } satisfies PixelRpcMessage);
+      if (!response?.ok) throw new Error(response?.message ?? "OCR worker failed.");
+      return response.value;
+    } };
+  const faceDetector: FaceDetector = faceWorker
+    ? new FaceWorkerClient(faceWorker as never)
+    : { async detect(image) {
+      const response = await browser.runtime.sendMessage({
+        type: "PIXEL_FACE",
+        requestId: crypto.randomUUID(),
+        width: image.width,
+        height: image.height,
+        dataBase64: rasterToBase64(image.data),
+      } satisfies PixelRpcMessage);
+      if (!response?.ok) throw new Error(response?.message ?? "Face worker failed.");
+      return response.value;
+    } };
+
+  return {
+    textRecognizer,
+    faceDetector,
+    async initialize(models, profile) {
+      const requestId = () => crypto.randomUUID();
+      const detector = models.get("paddleocr-detector");
+      const recognizer = models.get("paddleocr-recognizer");
+      const dictionary = models.get("paddleocr-dictionary");
+      const faceModel = models.get("ultraface");
+      if (!detector || !recognizer || !dictionary || !faceModel) {
+        throw new Error("The verified pixel model set is incomplete.");
+      }
+      if (remote) {
+        const response = await browser.runtime.sendMessage({
+          type: "PIXEL_INIT",
+          requestId: requestId(),
+          mode: profile.mode,
+        } satisfies PixelRpcMessage);
+        if (!response?.ok) throw new Error(response?.message ?? "Pixel worker initialization failed.");
+        return;
+      }
+      await Promise.all([
+        initializeWorker(ocrWorker, {
+          requestId: requestId(),
+          type: "init",
+          mode: profile.mode,
+          detector,
+          recognizer,
+          dictionary,
+        }),
+        initializeWorker(faceWorker, {
+          requestId: requestId(),
+          type: "init",
+          mode: profile.mode,
+          model: faceModel,
+        }),
+      ]);
+    },
+    dispose() {
+      (ocrWorker as (Worker & { terminate?: () => void }) | undefined)?.terminate?.();
+      (faceWorker as (Worker & { terminate?: () => void }) | undefined)?.terminate?.();
+    },
+  };
+}

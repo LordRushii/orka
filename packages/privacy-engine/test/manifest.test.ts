@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { getManifestEntry, loadPinnedModel, ModelIntegrityError, sha256Hex } from "../src/manifest";
+import { getManifestEntry, loadPinnedModel, loadPinnedModelSet, MODEL_MANIFEST, ModelIntegrityError, sha256Hex } from "../src/manifest";
 
 function bytesOf(text: string): ArrayBuffer {
   return new TextEncoder().encode(text).buffer as ArrayBuffer;
@@ -59,6 +59,34 @@ describe("loadPinnedModel", () => {
 describe("getManifestEntry", () => {
   test("throws for a name with no pinned entry", () => {
     expect(() => getManifestEntry({}, "face")).toThrow(ModelIntegrityError);
+  });
+
+  describe("MODEL_MANIFEST", () => {
+    test("pins every production asset to a local URL, digest, and byte budget", () => {
+      expect(Object.keys(MODEL_MANIFEST)).toEqual([
+        "ort-wasm",
+        "paddleocr-detector",
+        "paddleocr-recognizer",
+        "ultraface",
+        "paddleocr-dictionary",
+      ]);
+      for (const entry of Object.values(MODEL_MANIFEST)) {
+        expect(entry.url.startsWith("/models/")).toBe(true);
+        expect(entry.sha256).toMatch(/^[a-f0-9]{64}$/);
+        expect(entry.maxBytes).toBeGreaterThan(0);
+      }
+    });
+
+    test("loads a complete pinned set without partial success", async () => {
+      const payload = bytesOf("asset");
+      const digest = await sha256Hex(payload);
+      const manifest = {
+        one: { name: "one", version: "1", url: "one", sha256: digest, maxBytes: 100 },
+        two: { name: "two", version: "1", url: "two", sha256: digest, maxBytes: 100 },
+      };
+      const result = await loadPinnedModelSet(manifest, async () => ({ arrayBuffer: async () => payload }));
+      expect(result.size).toBe(2);
+    });
   });
 
   test("returns the entry when present", () => {

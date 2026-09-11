@@ -5,3 +5,5 @@ export * from "./faceWorkerClient";
 export * from "./ocr";
 export * from "./face";
 export { nextRequestId } from "./requestId";
+export * from "./geometry";
+export * from "./modelManager";

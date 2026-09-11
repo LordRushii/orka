@@ -15,6 +15,8 @@
       "dependencies": {
         "@orka/contracts": "workspace:*",
         "@orka/privacy-engine": "workspace:*",
+        "onnxruntime-web": "1.29.0",
+        "paddleocr": "1.2.0",
         "react": "^19.2.4",
         "react-dom": "^19.2.4",
       },
@@ -56,6 +58,7 @@
       "dependencies": {
         "@orka/contracts": "workspace:*",
         "onnxruntime-web": "^1.29.0",
+        "paddleocr": "1.2.0",
       },
       "devDependencies": {
         "typescript": "^5.9.3",
@@ -724,6 +727,8 @@
     "p-locate": ["p-locate@5.0.0", "", { "dependencies": { "p-limit": "^3.0.2" } }, "sha512-LaNjtRWUBY++zB5nE/NwcaoMylSPk+S+ZHNB1TzdbMJMny6dynpAGt7X/tl/QYq3TIeE6nxHppbo2LGymrG5Pw=="],
 
     "package-json": ["package-json@10.0.1", "", { "dependencies": { "ky": "^1.2.0", "registry-auth-token": "^5.0.2", "registry-url": "^6.0.1", "semver": "^7.6.0" } }, "sha512-ua1L4OgXSBdsu1FPb7F3tYH0F48a6kxvod4pLUlGY9COeJAJQNX/sNH2IiEmsxw7lqYiAwrdHMjz1FctOsyDQg=="],
+
+    "paddleocr": ["paddleocr@1.2.0", "", {}, "sha512-+ASlmoxGM8u5X68ote31NVNPPavbeKT8vomiKwqje+54ufPflTtlV8dZzRMnSPX8jJeWRms88B95uk1ReS+0iA=="],
 
     "pako": ["pako@1.0.11", "", {}, "sha512-4hLB8Py4zZce5s4yd9XzopqwVv/yGNhV1Bl8NTmCq1763HeK2+EwVTv+leGeL13Dnh2wfbqowVPXCIO0z4taYw=="],
 

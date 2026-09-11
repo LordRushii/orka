@@ -6,9 +6,9 @@ import {
   type PrivacyEngine,
   type RuntimeProfile,
   type SafePageSnapshot,
-  type TextRecognizer,
-  type FaceDetector,
   type Viewport,
+  createPixelModelManager,
+  ModelLoadFailedError,
 } from "@orka/privacy-engine";
 import { TaskSession, type SanitizationFailureCode } from "@orka/contracts";
 import {
@@ -36,6 +36,7 @@ import type {
   TaskStateMessage,
 } from "../shared/messages.ts";
 import { isExtensionMessage } from "../shared/messages.ts";
+import { createPixelWorkers, type PixelWorkers } from "../shared/pixelWorkers.ts";
 
 type CaptureFlowErrorCode = "CAPTURE_FAILED" | "RESTRICTED_PAGE";
 
@@ -59,26 +60,12 @@ type ActiveTask = {
   cancelled: boolean;
   timeoutHandle?: ReturnType<typeof setTimeout>;
   audit?: LocalAudit;
+  modelManager: ReturnType<typeof createPixelModelManager>;
+  pixelWorkers: PixelWorkers;
 };
 
 let activeTask: ActiveTask | null = null;
 let captureAuthority: CaptureAuthority | null = null;
-
-const fallbackTextRecognizer: TextRecognizer = {
-  async recognize() {
-    // Pixel OCR is optional until a pinned model is bundled. DOM text
-    // detection still runs locally and protects DOM-exposed sensitive content.
-    return [];
-  },
-};
-
-const fallbackFaceDetector: FaceDetector = {
-  async detect() {
-    // Avoid blocking all local sanitization while the pinned face model is
-    // unavailable; the engine remains fail-closed for configured detectors.
-    return [];
-  },
-};
 
 function safeErrorMessage(error: unknown, fallback: string): string {
   const message = error instanceof Error
@@ -99,9 +86,9 @@ function publicFailureMessage(code: SanitizationFailureCode, message: string): s
     case "DETECTOR_TIMEOUT":
       return "Local privacy detection timed out.";
     case "DETECTOR_ERROR":
-      return "Local privacy detection failed.";
+      return safeErrorMessage(message, "Local privacy detection failed.");
     case "MODEL_LOAD_FAILED":
-      return "The local privacy model is unavailable.";
+      return safeErrorMessage(message, "The local privacy model is unavailable.");
     case "MERGE_FAILED":
       return "Local redaction failed.";
     case "POLICY_BELOW_THRESHOLD":
@@ -147,6 +134,11 @@ function clearRawCapture(task: ActiveTask): void {
   task.screenshotDataUrl = "";
 }
 
+function disposeModels(task: ActiveTask): void {
+  task.modelManager.dispose();
+  task.pixelWorkers.dispose();
+}
+
 function clearTaskTimer(task: ActiveTask): void {
   if (task.timeoutHandle !== undefined) {
     clearTimeout(task.timeoutHandle);
@@ -154,11 +146,15 @@ function clearTaskTimer(task: ActiveTask): void {
   }
 }
 
-function createEngine(): PrivacyEngine {
+function createEngine(pixelWorkers: PixelWorkers): PrivacyEngine {
   return createPrivacyEngine({
-    textRecognizer: fallbackTextRecognizer,
-    faceDetector: fallbackFaceDetector,
+    textRecognizer: pixelWorkers.textRecognizer,
+    faceDetector: pixelWorkers.faceDetector,
     encoder: createBrowserImageEncoder(),
+    // Full-viewport OCR on the WASM runtime is the slow path; give it real
+    // headroom under the 90s Task Session budget instead of the 6s default.
+    ocrTimeoutMs: 20_000,
+    faceTimeoutMs: 10_000,
   });
 }
 
@@ -338,6 +334,7 @@ async function failTask(task: ActiveTask, code: SanitizationFailureCode, message
   clearTaskTimer(task);
   clearRawCapture(task);
   clearAudit(task);
+  disposeModels(task);
   if (task.session.can("SANITIZATION_FAILED")) task.session.send("SANITIZATION_FAILED");
   sendEvent({
     type: "SANITIZATION_FAILURE",
@@ -353,6 +350,9 @@ async function failTask(task: ActiveTask, code: SanitizationFailureCode, message
 
 async function scanTask(task: ActiveTask): Promise<void> {
   try {
+    const models = await task.modelManager.initialize(task.profile);
+    await task.pixelWorkers.initialize(models, task.profile);
+    currentTask(task);
     let capture;
     try {
       capture = await captureFromAuthority(task.authority, captureBrowser());
@@ -398,7 +398,7 @@ async function scanTask(task: ActiveTask): Promise<void> {
       screenshot,
       snapshot: scaleSnapshot(snapshot.snapshot, snapshot.viewport, screenshot),
     };
-    const result = await createEngine().sanitize(input, task.profile);
+    const result = await createEngine(task.pixelWorkers).sanitize(input, task.profile);
     currentTask(task);
 
     if (!result.ok) {
@@ -425,6 +425,10 @@ async function scanTask(task: ActiveTask): Promise<void> {
     clearRawCapture(task);
     if (error instanceof CaptureFlowError) {
       await failTask(task, error.code, error.message);
+      return;
+    }
+    if (error instanceof ModelLoadFailedError) {
+      await failTask(task, "MODEL_LOAD_FAILED", error.message);
       return;
     }
     await failTask(task, "CAPTURE_FAILED", safeErrorMessage(error, "Local capture failed."));
@@ -467,6 +471,8 @@ async function startTask(message: StartTaskMessage): Promise<ExtensionResponse> 
     screenshotDataUrl: "",
     authority,
     cancelled: false,
+    modelManager: createPixelModelManager(),
+    pixelWorkers: createPixelWorkers(),
   };
   activeTask = task;
   task.session.send("START_SCAN");
@@ -476,6 +482,7 @@ async function startTask(message: StartTaskMessage): Promise<ExtensionResponse> 
     clearRawCapture(task);
     clearTaskTimer(task);
     clearAudit(task);
+    disposeModels(task);
     sendEvent({ type: "TASK_STOPPED", taskId: task.taskId });
     publishState(task);
     activeTask = null;
@@ -494,6 +501,7 @@ function stopTask(taskId?: string): ExtensionResponse {
   clearRawCapture(task);
   clearTaskTimer(task);
   clearAudit(task);
+  disposeModels(task);
   const stopped = task.session.stop();
   if (!stopped) return { ok: false, type: "ERROR", message: "Task Session is not active." };
   sendEvent({ type: "TASK_STOPPED", taskId: task.taskId });
@@ -510,6 +518,7 @@ function closeAudit(taskId?: string): ExtensionResponse {
   clearRawCapture(task);
   clearTaskTimer(task);
   clearAudit(task);
+  disposeModels(task);
   if (task.session.can("RESET")) task.session.send("RESET");
   activeTask = null;
   sendEvent({ type: "AUDIT_CLOSED", taskId: task.taskId });
