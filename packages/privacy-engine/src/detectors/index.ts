@@ -6,6 +6,7 @@ import { detectEmails } from "./email";
 import { detectPan } from "./pan";
 import { detectPasswordFields } from "./password";
 import { detectPhoneNumbers } from "./phone";
+import { detectSensitiveFormFields } from "./form";
 import type { TextSource } from "./textSource";
 
 export { detectAadhaar } from "./aadhaar";
@@ -14,6 +15,7 @@ export { detectEmails } from "./email";
 export { detectPan } from "./pan";
 export { detectPasswordFields } from "./password";
 export { detectPhoneNumbers } from "./phone";
+export { detectSensitiveFormFields } from "./form";
 export { passesLuhnCheck } from "./luhn";
 export type { TextSource } from "./textSource";
 
@@ -54,6 +56,7 @@ export function runDomDetectors(snapshot: SafePageSnapshot): Detection[] {
 
   const detections = [
     ...detectPasswordFields(snapshot.elements),
+    ...detectSensitiveFormFields(snapshot.elements),
     ...detectTextPii(textSources),
   ];
 

@@ -6,6 +6,12 @@ export type OcrToken = {
   confidence: number;
 };
 
+export type OcrPolygonToken = {
+  text: string;
+  polygon: Array<{ x: number; y: number }>;
+  confidence: number;
+};
+
 /**
  * Runs OCR entirely locally (PaddleOCR.js in a Worker, per
  * phases/02-local-privacy-engine.md). Implementations must never return

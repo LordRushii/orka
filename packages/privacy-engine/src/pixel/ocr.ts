@@ -3,6 +3,18 @@ import type { TextSource } from "../detectors/textSource";
 import { meetsThreshold } from "../policy";
 import type { Detection, RasterImage } from "../types";
 import type { TextRecognizer } from "./types";
+import { polygonToBox } from "./geometry";
+import type { OcrPolygonToken } from "./types";
+
+export function convertOcrPolygons(
+  tokens: OcrPolygonToken[],
+  bounds: { width: number; height: number },
+): Array<import("./types").OcrToken> {
+  return tokens.flatMap((token) => {
+    const box = polygonToBox(token.polygon, bounds);
+    return box ? [{ text: token.text, box, confidence: token.confidence }] : [];
+  });
+}
 
 /**
  * Runs local OCR and classifies its tokens with the same deterministic

@@ -76,6 +76,37 @@ describe("sanitize", () => {
     expect(result.localAudit.originalScreenshot).toBe(input.screenshot);
   });
 
+  test("redacts OCR-only identifiers and face regions before returning the observation", async () => {
+    const result = await sanitize(
+      baseInput(),
+      PROFILE,
+      baseDeps({
+        textRecognizer: {
+          recognize: async () => [{
+            text: "Aadhaar 2345 6789 0123",
+            box: { x: 2, y: 2, width: 30, height: 8 },
+            confidence: 0.99,
+          }],
+        },
+        faceDetector: {
+          detect: async () => [{
+            box: { x: 10, y: 20, width: 12, height: 12 },
+            confidence: 0.99,
+          }],
+        },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.observation.redactionSummary).toEqual(
+      expect.arrayContaining([
+        { category: "GOVT_ID", count: 1 },
+        { category: "FACE", count: 1 },
+      ]),
+    );
+    expect(result.localAudit.redactionMap).toHaveLength(2);
+  });
+
   test("redacts a PII value pasted directly into the task text", async () => {
     const input = baseInput({ task: `Log in with ${SAMPLE_EMAIL} please` });
     const result = await sanitize(input, PROFILE, baseDeps());

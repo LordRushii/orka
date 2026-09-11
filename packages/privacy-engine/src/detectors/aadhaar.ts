@@ -18,18 +18,18 @@ export function detectAadhaar(sources: TextSource[]): Detection[] {
   const detections: Detection[] = [];
   for (const source of sources) {
     AADHAAR_REGEX.lastIndex = 0;
-    const match = AADHAAR_REGEX.exec(source.text);
-    if (!match) continue;
-    const digits = `${match[1]}${match[2]}${match[3]}`;
-    if (isRepeatedDigit(digits)) continue;
-
-    detections.push({
-      category: "GOVT_ID",
-      confidence: 0.85,
-      source: source.origin,
-      box: source.box,
-      reason: "Text matches an Aadhaar-shaped 12-digit number.",
-    });
+    let match: RegExpExecArray | null;
+    while ((match = AADHAAR_REGEX.exec(source.text)) !== null) {
+      const digits = `${match[1]}${match[2]}${match[3]}`;
+      if (isRepeatedDigit(digits)) continue;
+      detections.push({
+        category: "GOVT_ID",
+        confidence: 0.85,
+        source: source.origin,
+        box: source.box,
+        reason: "Text matches an Aadhaar-shaped 12-digit number.",
+      });
+    }
   }
   return detections;
 }

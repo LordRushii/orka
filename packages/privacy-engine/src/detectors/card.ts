@@ -15,21 +15,21 @@ export function detectCardNumbers(sources: TextSource[]): Detection[] {
   const detections: Detection[] = [];
   for (const source of sources) {
     CARD_REGEX.lastIndex = 0;
-    const match = CARD_REGEX.exec(source.text);
-    if (!match) continue;
-    const digits = match[0].replace(/[ -]/g, "");
-    if (digits.length < 13 || digits.length > 19) continue;
-
-    const confidence = passesLuhnCheck(digits) ? 0.95 : 0.72;
-    detections.push({
-      category: "CARD",
-      confidence,
-      source: source.origin,
-      box: source.box,
-      reason: passesLuhnCheck(digits)
-        ? "Text matches a card-number shape and passes the Luhn check."
-        : "Text matches a card-number shape.",
-    });
+    let match: RegExpExecArray | null;
+    while ((match = CARD_REGEX.exec(source.text)) !== null) {
+      const digits = match[0].replace(/[ -]/g, "");
+      if (digits.length < 13 || digits.length > 19) continue;
+      const valid = passesLuhnCheck(digits);
+      detections.push({
+        category: "CARD",
+        confidence: valid ? 0.95 : 0.72,
+        source: source.origin,
+        box: source.box,
+        reason: valid
+          ? "Text matches a card-number shape and passes the Luhn check."
+          : "Text matches a card-number shape.",
+      });
+    }
   }
   return detections;
 }

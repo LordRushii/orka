@@ -9,16 +9,17 @@ export function detectPan(sources: TextSource[]): Detection[] {
   const detections: Detection[] = [];
   for (const source of sources) {
     PAN_REGEX.lastIndex = 0;
-    const match = PAN_REGEX.exec(source.text.toUpperCase());
-    if (!match) continue;
-
-    detections.push({
-      category: "GOVT_ID",
-      confidence: 0.85,
-      source: source.origin,
-      box: source.box,
-      reason: "Text matches a PAN-shaped value.",
-    });
+    const text = source.text.toUpperCase();
+    let match: RegExpExecArray | null;
+    while ((match = PAN_REGEX.exec(text)) !== null) {
+      detections.push({
+        category: "GOVT_ID",
+        confidence: 0.85,
+        source: source.origin,
+        box: source.box,
+        reason: "Text matches a PAN-shaped value.",
+      });
+    }
   }
   return detections;
 }
