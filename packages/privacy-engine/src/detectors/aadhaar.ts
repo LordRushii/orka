@@ -3,7 +3,14 @@ import type { TextSource } from "./textSource";
 
 // Aadhaar numbers are 12 digits, conventionally grouped in 4s, and never
 // start with 0 or 1.
-export const AADHAAR_REGEX = /\b([2-9]\d{3})[\s-]?(\d{4})[\s-]?(\d{4})\b/g;
+//
+// The lookarounds reject a 12-digit run that is part of a longer one. Without
+// them, the first 12 digits of a space-grouped 16-digit card number
+// ("4111 1111 1111 1111") match this pattern, and since GOVT_ID outranks CARD
+// at merge, ordinary payment cards were being reported to the planner as
+// government IDs. A longer run is still redacted -- the card detector claims
+// it -- so this narrows the label, never the coverage.
+export const AADHAAR_REGEX = /(?<!\d[\s-]?)\b([2-9]\d{3})[\s-]?(\d{4})[\s-]?(\d{4})\b(?![\s-]?\d)/g;
 
 export function isRepeatedDigit(value: string): boolean {
   return new Set(value.split("")).size === 1;
