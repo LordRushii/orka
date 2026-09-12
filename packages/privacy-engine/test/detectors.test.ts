@@ -58,6 +58,33 @@ describe("detectAadhaar", () => {
   test("rejects a number starting with 0 or 1", () => {
     expect(detectAadhaar(textSource("0123 4567 8901"))).toHaveLength(0);
   });
+
+  test("does not claim the leading 12 digits of a longer card number", () => {
+    // A space-grouped card number contains an Aadhaar-shaped prefix. GOVT_ID
+    // outranks CARD at merge, so matching here mislabels payment cards.
+    expect(detectAadhaar(textSource("Card: 4111 1111 1111 1111"))).toHaveLength(0);
+    expect(detectAadhaar(textSource("Card: 2345 6789 0123 4567"))).toHaveLength(0);
+  });
+
+  test("still flags an Aadhaar number adjacent to ordinary sentence text", () => {
+    expect(detectAadhaar(textSource("ID 2345 6789 0123 issued today"))).toHaveLength(1);
+    expect(detectAadhaar(textSource("Aadhaar 234567890123"))).toHaveLength(1);
+  });
+});
+
+describe("card and Aadhaar disambiguation", () => {
+  test("a space-grouped card number is reported as CARD, not GOVT_ID", () => {
+    const source = textSource("Card: 4111 1111 1111 1111");
+    expect(detectCardNumbers(source)[0]?.category).toBe("CARD");
+    expect(detectAadhaar(source)).toHaveLength(0);
+  });
+
+  test("a long digit run is still redacted even though Aadhaar declines it", () => {
+    // The narrower Aadhaar match must never create an unredacted gap.
+    const source = textSource("Number 23456789012345");
+    expect(detectAadhaar(source)).toHaveLength(0);
+    expect(detectCardNumbers(source).length).toBeGreaterThan(0);
+  });
 });
 
 describe("detectPan", () => {

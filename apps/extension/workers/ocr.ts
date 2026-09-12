@@ -1,12 +1,55 @@
 import * as ort from "onnxruntime-web";
 import { PaddleOcrService } from "paddleocr";
+import { detectorInputBudget } from "@orka/privacy-engine";
 
-type Init = { type: "init"; requestId: string; detector: ArrayBuffer; recognizer: ArrayBuffer; dictionary: ArrayBuffer };
+type RuntimeMode = "webgpu" | "balanced" | "wasm";
+type Init = {
+  type: "init";
+  requestId: string;
+  mode?: RuntimeMode;
+  detector: ArrayBuffer;
+  recognizer: ArrayBuffer;
+  dictionary: ArrayBuffer;
+};
 type Recognize = { type: "recognize"; requestId: string; width: number; height: number; data: ArrayBuffer };
 type Message = Init | Recognize;
 
+type OrtModule = NonNullable<import("paddleocr").PaddleOptions["ort"]>;
+
 let service: PaddleOcrService | undefined;
+let runtimeMode: RuntimeMode = "wasm";
 ort.env.wasm.wasmPaths = new URL("./models/", import.meta.url).href;
+
+/**
+ * Detection tuning applied on top of the PP-OCRv5 preset.
+ *
+ * The preset targets balanced precision on document-sized images. This
+ * pipeline wants recall instead: an OCR token only becomes a redaction after
+ * a deterministic PII classifier (email/phone/Aadhaar/PAN/Luhn-checked card)
+ * matches its text, so a looser text detector adds candidate regions, not
+ * spurious redactions. Missing a region, by contrast, means legible PII in
+ * the observation.
+ */
+const DETECTION_TUNING = {
+  // Preset default 0.6 discards the weaker score maps that small, low-contrast
+  // thumbnail text produces.
+  boxScoreThreshold: 0.45,
+  // Preset default 1.5 can clip ascenders/descenders on small text, which
+  // truncates the recognized string and breaks exact-shape PII matching.
+  unclipRatio: 1.8,
+  // Preset default 20px^2 drops short tokens rendered inside thumbnails.
+  minimumAreaThreshold: 8,
+} as const;
+
+/**
+ * Longest side handed to the detector. Tiles arrive already sized to the
+ * runtime's budget, so `max` limiting only engages on the full-image pass.
+ * Shared with the tile planner: if these two ever disagree, tiles get
+ * rescaled after planning and small-text recall silently drops.
+ */
+function maxSideLengthFor(mode: RuntimeMode): number {
+  return detectorInputBudget(mode);
+}
 
 function toBytes(value: unknown): Uint8Array {
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
@@ -28,10 +71,32 @@ function toArrayBuffer(value: unknown): ArrayBuffer {
   return Uint8Array.from(toBytes(value)).buffer;
 }
 
+/**
+ * PaddleOCR creates its sessions through `ort.InferenceSession.create(buffer)`
+ * and exposes no hook for execution providers, so the GPU profile is applied
+ * by wrapping the module it receives. WASM stays in the provider list as the
+ * fallback when a WebGPU session cannot be created.
+ */
+function ortModuleFor(mode: RuntimeMode): OrtModule {
+  const base = ort as unknown as OrtModule;
+  if (mode !== "webgpu") return base;
+  return {
+    ...base,
+    InferenceSession: {
+      ...base.InferenceSession,
+      create: (modelBuffer: ArrayBuffer) =>
+        ort.InferenceSession.create(modelBuffer, {
+          executionProviders: ["webgpu", "wasm"],
+        }) as unknown as ReturnType<OrtModule["InferenceSession"]["create"]>,
+    },
+  } as OrtModule;
+}
+
 self.onmessage = async (event: MessageEvent<Message>) => {
   const message = event.data;
   try {
     if (message.type === "init") {
+      runtimeMode = message.mode ?? "wasm";
       // PaddleOCR character dictionaries omit the space character; the
       // official decoder convention (`use_space_char`) appends it after
       // loading. The CTC blank entry is handled separately by the model
@@ -41,7 +106,7 @@ self.onmessage = async (event: MessageEvent<Message>) => {
         " ",
       ];
       service = await PaddleOcrService.createInstance({
-        ort: ort as unknown as import("paddleocr").PaddleOptions["ort"],
+        ort: ortModuleFor(runtimeMode),
         modelPreset: "PP-OCRv5_mobile",
         detection: { modelBuffer: toArrayBuffer(message.detector) },
         recognition: { modelBuffer: toArrayBuffer(message.recognizer), charactersDictionary: dictionary },
@@ -50,11 +115,20 @@ self.onmessage = async (event: MessageEvent<Message>) => {
       return;
     }
     if (!service) throw new Error("OCR worker has not been initialized.");
-    const results = await service.recognize({
-      width: message.width,
-      height: message.height,
-      data: toBytes(message.data),
-    });
+    const results = await service.recognize(
+      {
+        width: message.width,
+        height: message.height,
+        data: toBytes(message.data),
+      },
+      {
+        detection: {
+          ...DETECTION_TUNING,
+          limitType: "max",
+          maxSideLength: maxSideLengthFor(runtimeMode),
+        },
+      },
+    );
     const tokens = results.map((result) => ({
       text: result.text,
       confidence: result.confidence,
