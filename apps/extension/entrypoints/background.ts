@@ -1,5 +1,4 @@
 import {
-  createPrivacyEngine,
   selectRuntime,
   type CaptureInput,
   type LocalAudit,
@@ -37,6 +36,8 @@ import type {
 } from "../shared/messages.ts";
 import { isExtensionMessage } from "../shared/messages.ts";
 import { createPixelWorkers, type PixelWorkers } from "../shared/pixelWorkers.ts";
+import { createEngine, TASK_SESSION_TIMEOUT_MS } from "../shared/engine.ts";
+import { releaseTaskResources } from "../shared/taskCleanup.ts";
 
 type CaptureFlowErrorCode = "CAPTURE_FAILED" | "RESTRICTED_PAGE";
 
@@ -126,36 +127,9 @@ function publishState(task: ActiveTask): void {
   sendEvent(message);
 }
 
-function clearAudit(task: ActiveTask): void {
-  task.audit = undefined;
-}
-
-function clearRawCapture(task: ActiveTask): void {
-  task.screenshotDataUrl = "";
-}
-
-function disposeModels(task: ActiveTask): void {
-  task.modelManager.dispose();
-  task.pixelWorkers.dispose();
-}
-
-function clearTaskTimer(task: ActiveTask): void {
-  if (task.timeoutHandle !== undefined) {
-    clearTimeout(task.timeoutHandle);
-    task.timeoutHandle = undefined;
-  }
-}
-
-function createEngine(pixelWorkers: PixelWorkers): PrivacyEngine {
-  return createPrivacyEngine({
-    textRecognizer: pixelWorkers.textRecognizer,
-    faceDetector: pixelWorkers.faceDetector,
-    encoder: createBrowserImageEncoder(),
-    // Full-viewport OCR on the WASM runtime is the slow path; give it real
-    // headroom under the 90s Task Session budget instead of the 6s default.
-    ocrTimeoutMs: 20_000,
-    faceTimeoutMs: 10_000,
-  });
+/** Drops the raw capture, audit, timer, and model/worker state in one step. */
+function releaseTask(task: ActiveTask): void {
+  releaseTaskResources(task);
 }
 
 function scaleBox(
@@ -331,10 +305,7 @@ function auditView(
 
 async function failTask(task: ActiveTask, code: SanitizationFailureCode, message: string) {
   if (activeTask !== task || task.cancelled) return;
-  clearTaskTimer(task);
-  clearRawCapture(task);
-  clearAudit(task);
-  disposeModels(task);
+  releaseTask(task);
   if (task.session.can("SANITIZATION_FAILED")) task.session.send("SANITIZATION_FAILED");
   sendEvent({
     type: "SANITIZATION_FAILURE",
@@ -410,7 +381,10 @@ async function scanTask(task: ActiveTask): Promise<void> {
     const originalScreenshot = await encodeForLocalAudit(encoder, result.localAudit.originalScreenshot);
     task.audit = result.localAudit;
     if (!task.session.can("SANITIZED")) {
-      clearAudit(task);
+      // The session was stopped, timed out, or replaced while this scan was
+      // still running: release everything rather than leaving workers and the
+      // audit bitmap alive behind a task nobody can reach.
+      releaseTask(task);
       return;
     }
     task.session.send("SANITIZED");
@@ -422,7 +396,10 @@ async function scanTask(task: ActiveTask): Promise<void> {
     });
     publishState(task);
   } catch (error) {
-    clearRawCapture(task);
+    // `failTask` no-ops once the task is no longer the active one, so release
+    // here first: an already-replaced task must not keep its capture, models,
+    // or workers alive.
+    releaseTask(task);
     if (error instanceof CaptureFlowError) {
       await failTask(task, error.code, error.message);
       return;
@@ -479,14 +456,11 @@ async function startTask(message: StartTaskMessage): Promise<ExtensionResponse> 
   task.timeoutHandle = setTimeout(() => {
     if (activeTask !== task || task.cancelled || !task.session.enforceTimeout()) return;
     task.cancelled = true;
-    clearRawCapture(task);
-    clearTaskTimer(task);
-    clearAudit(task);
-    disposeModels(task);
+    releaseTask(task);
     sendEvent({ type: "TASK_STOPPED", taskId: task.taskId });
     publishState(task);
     activeTask = null;
-  }, 90_000);
+  }, TASK_SESSION_TIMEOUT_MS);
   publishState(task);
   void scanTask(task);
   return { ok: true, type: "ACK", taskId: task.taskId };
@@ -498,10 +472,7 @@ function stopTask(taskId?: string): ExtensionResponse {
   }
   const task = activeTask;
   task.cancelled = true;
-  clearRawCapture(task);
-  clearTaskTimer(task);
-  clearAudit(task);
-  disposeModels(task);
+  releaseTask(task);
   const stopped = task.session.stop();
   if (!stopped) return { ok: false, type: "ERROR", message: "Task Session is not active." };
   sendEvent({ type: "TASK_STOPPED", taskId: task.taskId });
@@ -515,10 +486,7 @@ function closeAudit(taskId?: string): ExtensionResponse {
     return { ok: false, type: "ERROR", message: "No matching local audit exists." };
   }
   const task = activeTask;
-  clearRawCapture(task);
-  clearTaskTimer(task);
-  clearAudit(task);
-  disposeModels(task);
+  releaseTask(task);
   if (task.session.can("RESET")) task.session.send("RESET");
   activeTask = null;
   sendEvent({ type: "AUDIT_CLOSED", taskId: task.taskId });

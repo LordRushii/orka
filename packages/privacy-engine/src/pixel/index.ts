@@ -6,4 +6,6 @@ export * from "./ocr";
 export * from "./face";
 export { nextRequestId } from "./requestId";
 export * from "./geometry";
+export * from "./tiles";
+export * from "./faceModel";
 export * from "./modelManager";

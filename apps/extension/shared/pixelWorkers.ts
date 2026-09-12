@@ -8,7 +8,7 @@ import {
 } from "@orka/privacy-engine";
 import type { RuntimeProfile } from "@orka/privacy-engine";
 
-type WorkerInitRequest = {
+export type WorkerInitRequest = {
   requestId: string;
   type: "init";
   mode: RuntimeProfile["mode"];
@@ -18,7 +18,7 @@ type WorkerInitRequest = {
   model?: ArrayBuffer;
 };
 
-type WorkerInitResponse = {
+export type WorkerInitResponse = {
   requestId: string;
   type: "ready" | "error";
   message?: string;
@@ -60,15 +60,39 @@ export type PixelWorkers = {
   dispose(): void;
 };
 
-function initializeWorker(
+/**
+ * Per-request worker budget. One scan issues a full-image OCR pass plus
+ * several native-resolution tiles, and a single 960px tile on the WASM
+ * runtime can outlast the client's 8s default. This stays above the engine's
+ * own per-stage budget so the engine-level timeout -- which carries the
+ * clearer DETECTOR_TIMEOUT message -- is the one that surfaces first.
+ */
+const WORKER_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Budget for one worker's model initialization. Session creation compiles the
+ * ONNX graphs, which is the slowest step of a scan on the WASM runtime.
+ */
+const WORKER_INIT_TIMEOUT_MS = 30_000;
+
+/**
+ * Resolves once the worker reports `ready`, and rejects on an `error`
+ * response or when the worker never answers.
+ *
+ * A rejection here must fail the scan closed: a worker that did not finish
+ * initializing has no inference session, so it would report zero detections
+ * for every image and the audit would claim a fully-masked capture.
+ */
+export function initializeWorker(
   worker: WorkerLike<WorkerInitRequest, WorkerInitResponse>,
   request: WorkerInitRequest,
+  timeoutMs = WORKER_INIT_TIMEOUT_MS,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       worker.removeEventListener("message", onMessage);
       reject(new Error("Pixel worker initialization timed out."));
-    }, 30_000);
+    }, timeoutMs);
 
     function onMessage(event: { data: WorkerInitResponse }) {
       if (event.data.requestId !== request.requestId) return;
@@ -139,14 +163,14 @@ export function installPixelWorkerHost(): () => void {
       if (request.type === "PIXEL_OCR") {
         // Higher than the engine's own OCR budget so the engine-level timeout
         // (with its clearer message) is the one that surfaces first.
-        const client = new OcrWorkerClient(worker as never, 30_000);
+        const client = new OcrWorkerClient(worker as never, WORKER_REQUEST_TIMEOUT_MS);
         respond(client.recognize({
           width: request.width,
           height: request.height,
           data: base64ToRaster(request.dataBase64),
         }).then((value) => ({ ok: true, value })));
       } else {
-        const client = new FaceWorkerClient(worker as never, 30_000);
+        const client = new FaceWorkerClient(worker as never, WORKER_REQUEST_TIMEOUT_MS);
         respond(client.detect({
           width: request.width,
           height: request.height,
@@ -179,7 +203,7 @@ export function createPixelWorkers(): PixelWorkers {
   const faceWorker = workerFactory(workerUrl("face"));
   const remote = !ocrWorker || !faceWorker;
   const textRecognizer: TextRecognizer = ocrWorker
-    ? new OcrWorkerClient(ocrWorker as never)
+    ? new OcrWorkerClient(ocrWorker as never, WORKER_REQUEST_TIMEOUT_MS)
     : { async recognize(image) {
       const response = await browser.runtime.sendMessage({
         type: "PIXEL_OCR",
@@ -192,7 +216,7 @@ export function createPixelWorkers(): PixelWorkers {
       return response.value;
     } };
   const faceDetector: FaceDetector = faceWorker
-    ? new FaceWorkerClient(faceWorker as never)
+    ? new FaceWorkerClient(faceWorker as never, WORKER_REQUEST_TIMEOUT_MS)
     : { async detect(image) {
       const response = await browser.runtime.sendMessage({
         type: "PIXEL_FACE",

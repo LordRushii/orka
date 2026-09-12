@@ -6,6 +6,8 @@ import { mergeDetections } from "./merge";
 import { ModelIntegrityError } from "./manifest";
 import { runFaceDetection } from "./pixel/face";
 import { runOcrDetection } from "./pixel/ocr";
+import type { TilePlanOptions } from "./pixel/tiles";
+import { pixelScanBudget } from "./policy";
 import type { FaceDetector, TextRecognizer } from "./pixel/types";
 import { redactAccessibilitySnapshot, redactScreenshot, summarizeRedactions } from "./redact";
 import { redactTaskText } from "./taskText";
@@ -25,6 +27,11 @@ export type SanitizeDependencies = {
   encoder: ImageEncoder;
   ocrTimeoutMs?: number;
   faceTimeoutMs?: number;
+  /**
+   * Overrides the runtime-derived tiled OCR budget. `false` restricts OCR to
+   * a single full-image pass; tests use it to isolate the full-image path.
+   */
+  ocrTiling?: TilePlanOptions | false;
   now?: () => number;
 };
 
@@ -114,7 +121,11 @@ export async function sanitize(
     let ocrDetections: Detection[];
     try {
       ocrDetections = await withTimeout(
-        runOcrDetection(deps.textRecognizer, input.screenshot),
+        runOcrDetection(deps.textRecognizer, input.screenshot, {
+          // The runtime profile decides how much of the capture is re-read at
+          // native resolution; see PIXEL_SCAN_POLICY.
+          tiling: deps.ocrTiling ?? pixelScanBudget(profile.mode),
+        }),
         deps.ocrTimeoutMs ?? DEFAULT_OCR_TIMEOUT_MS,
         "OCR detection",
       );
@@ -196,8 +207,6 @@ export async function sanitize(
       detections: allDetections,
       createdAt: now(),
     };
-
-    void profile; // Runtime choice affects how detectors run upstream, not the observation shape.
 
     return { ok: true, observation, localAudit };
   } catch (error) {
