@@ -11,14 +11,13 @@ import {
 } from "@orka/privacy-engine";
 import { TaskSession, type SanitizationFailureCode } from "@orka/contracts";
 import {
-  CAPTURE_AUTHORITY_TTL_MS,
   CaptureAuthorityError,
   captureFromAuthority,
-  createCaptureAuthority,
   validateCaptureAuthority,
   type CaptureAuthority,
   type CaptureAuthorityBrowser,
 } from "../shared/captureAuthority.ts";
+import { createCaptureAuthorityStore } from "../shared/captureAuthorityStore.ts";
 import { collectSafePageSnapshot } from "../shared/snapshot.ts";
 import {
   createBrowserImageEncoder,
@@ -66,7 +65,7 @@ type ActiveTask = {
 };
 
 let activeTask: ActiveTask | null = null;
-let captureAuthority: CaptureAuthority | null = null;
+const captureAuthorityStore = createCaptureAuthorityStore();
 
 function safeErrorMessage(error: unknown, fallback: string): string {
   const message = error instanceof Error
@@ -237,30 +236,26 @@ function captureBrowser(): CaptureAuthorityBrowser {
 }
 
 function captureAuthorityResponse() {
-  if (!captureAuthority) {
-    return { ok: false as const, type: "ERROR" as const, message: "Reopen Orka from the toolbar before starting a task." };
-  }
-  if (Date.now() - captureAuthority.issuedAt > CAPTURE_AUTHORITY_TTL_MS) {
-    captureAuthority = null;
-    return { ok: false as const, type: "ERROR" as const, message: "Capture permission expired. Reopen Orka from the toolbar." };
-  }
-  return { ok: true as const, type: "CAPTURE_AUTHORITY" as const, authorityId: captureAuthority.id };
+  return captureAuthorityStore.response();
 }
 
 function takeCaptureAuthority(id: string): CaptureAuthority {
-  const response = captureAuthorityResponse();
-  if (!response.ok || !captureAuthority || response.authorityId !== id) {
-    throw new CaptureFlowError("CAPTURE_FAILED", "Capture permission is unavailable. Reopen Orka from the toolbar.");
+  try {
+    // Reusable within its TTL: the live tab/origin/active-tab checks still run
+    // on every capture, so a second task needs no toolbar reopen.
+    return captureAuthorityStore.use(id);
+  } catch (error) {
+    if (error instanceof CaptureAuthorityError) {
+      throw new CaptureFlowError("CAPTURE_FAILED", error.message);
+    }
+    throw error;
   }
-  const authority = captureAuthority;
-  captureAuthority = null;
-  return authority;
 }
 
 async function openSidePanelForAction(tab: { id?: number; windowId?: number; url?: string }): Promise<void> {
-  captureAuthority = null;
+  captureAuthorityStore.clear();
   try {
-    captureAuthority = createCaptureAuthority(tab, crypto.randomUUID());
+    captureAuthorityStore.mint(tab, crypto.randomUUID());
   } catch (error) {
     console.warn("Orka toolbar action is not capturable", error);
   }
@@ -268,7 +263,7 @@ async function openSidePanelForAction(tab: { id?: number; windowId?: number; url
   try {
     await browser.sidePanel.open({ tabId: tab.id });
   } catch (error) {
-    captureAuthority = null;
+    captureAuthorityStore.clear();
     console.error("Failed to open Orka side panel", error);
   }
 }
