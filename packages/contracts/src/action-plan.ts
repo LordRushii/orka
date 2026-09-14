@@ -24,11 +24,34 @@ const BaseActionFields = {
   risk: RiskSchema,
 };
 
+/**
+ * `z.string().url()` is satisfied by `javascript:`, `data:`, and `file:` URLs
+ * because it only asks whether `new URL()` parses. A planner must never be
+ * able to smuggle script execution or a local-file read through a `navigate`
+ * action, so the scheme is checked here, in the contract, rather than left to
+ * the executor alone.
+ */
+const HttpUrlSchema = z
+  .string()
+  .url()
+  .max(2048)
+  .refine(
+    (value) => {
+      try {
+        const protocol = new URL(value).protocol;
+        return protocol === "https:" || protocol === "http:";
+      } catch {
+        return false;
+      }
+    },
+    { message: "url must use http or https" },
+  );
+
 export const NavigateActionSchema = z
   .object({
     type: z.literal("navigate"),
     ...BaseActionFields,
-    url: z.string().url().max(2048),
+    url: HttpUrlSchema,
   })
   .strict();
 export type NavigateAction = z.infer<typeof NavigateActionSchema>;

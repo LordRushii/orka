@@ -6,3 +6,8 @@ dist
 *.tsbuildinfo
 bun.lockb.bak
 .DS_Store
+
+# Provider credentials and gateway tokens live here and must never be committed.
+.env
+.env.*
+!.env.example

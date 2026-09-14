@@ -13,6 +13,12 @@ export type ReleasableTask = {
   timeoutHandle?: ReturnType<typeof setTimeout>;
   /** In-memory `LocalAudit` holding exact boxes and the original bitmap. */
   audit?: unknown;
+  /**
+   * Aborts an in-flight `POST /v1/plan`. A stopped or timed-out session must
+   * not leave a request carrying the sanitized screenshot running against the
+   * gateway, nor apply a plan that arrives after the user pressed Stop.
+   */
+  plannerAbort?: { abort(): void };
   modelManager: { dispose(): void };
   pixelWorkers: { dispose(): void };
 };
@@ -29,6 +35,16 @@ export function releaseTaskResources(task: ReleasableTask): void {
   if (task.timeoutHandle !== undefined) {
     clearTimeout(task.timeoutHandle);
     task.timeoutHandle = undefined;
+  }
+
+  if (task.plannerAbort !== undefined) {
+    const plannerAbort = task.plannerAbort;
+    task.plannerAbort = undefined;
+    try {
+      plannerAbort.abort();
+    } catch {
+      // An already-settled request cannot be un-sent; nothing left to release.
+    }
   }
 
   try {
