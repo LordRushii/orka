@@ -28,6 +28,24 @@ packages/
 
 Read [PRD.md](docs/PRD.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [TECH-STACK.md](docs/TECH-STACK.md), and [SECURITY-PRIVACY.md](docs/SECURITY-PRIVACY.md) before implementation. The build order is in [phases](phases/).
 
+## Running it locally
+
+```bash
+bun install
+cp apps/gateway/.env.example apps/gateway/.env   # optional; defaults work without it
+bun run dev:gateway                              # http://127.0.0.1:8787, loopback only
+bun run dev:extension                            # WXT dev build in .output/chrome-mv3
+```
+
+Load `apps/extension/.output/chrome-mv3` as an unpacked extension, then open the side panel and pick a planner. With no configuration at all the gateway serves `mock` (deterministic, in-process) and `lmstudio` (your own loopback server). Cloud providers require both a key in `apps/gateway/.env` and an entry in `ORKA_ENABLED_PROVIDERS`, so a fresh checkout cannot make an outbound call by accident.
+
+Provider API keys live only in the gateway environment. The browser stores a gateway session token and nothing else.
+
+```bash
+bun test        # unit and contract tests
+bun run typecheck
+```
+
 ## Non-negotiables
 
 - Sanitization completes before any network request to the planner gateway.

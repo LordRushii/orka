@@ -9,7 +9,7 @@ import {
   createPixelModelManager,
   ModelLoadFailedError,
 } from "@orka/privacy-engine";
-import { TaskSession, type SanitizationFailureCode } from "@orka/contracts";
+import { TaskSession, type SanitizationFailureCode, type SanitizedObservation } from "@orka/contracts";
 import {
   CaptureAuthorityError,
   captureFromAuthority,
@@ -27,16 +27,33 @@ import {
 import type {
   ExtensionMessage,
   ExtensionResponse,
+  GatewayCheckResponse,
   LocalAuditView,
+  PlannerSettingsResponse,
   SnapshotFailureMessage,
   SnapshotResultMessage,
   StartTaskMessage,
   TaskStateMessage,
 } from "../shared/messages.ts";
 import { isExtensionMessage } from "../shared/messages.ts";
+import {
+  checkGateway,
+  requestPlan,
+  type PlannerFailure,
+  type PlannerResult,
+} from "../shared/plannerClient.ts";
+import {
+  GatewayUrlError,
+  loadPlannerSettings,
+  savePlannerSettings,
+  type PlannerSettings,
+} from "../shared/settings.ts";
 import { createPixelWorkers, type PixelWorkers } from "../shared/pixelWorkers.ts";
 import { createEngine, TASK_SESSION_TIMEOUT_MS } from "../shared/engine.ts";
 import { releaseTaskResources } from "../shared/taskCleanup.ts";
+
+/** Upper bound on a manual "Check gateway" probe, so the button always settles. */
+const GATEWAY_CHECK_TIMEOUT_MS = 5_000;
 
 type CaptureFlowErrorCode = "CAPTURE_FAILED" | "RESTRICTED_PAGE";
 
@@ -60,6 +77,7 @@ type ActiveTask = {
   cancelled: boolean;
   timeoutHandle?: ReturnType<typeof setTimeout>;
   audit?: LocalAudit;
+  plannerAbort?: AbortController;
   modelManager: ReturnType<typeof createPixelModelManager>;
   pixelWorkers: PixelWorkers;
 };
@@ -314,8 +332,74 @@ async function failTask(task: ActiveTask, code: SanitizationFailureCode, message
   publishState(task);
 }
 
-async function scanTask(task: ActiveTask): Promise<void> {
+function failPlan(task: ActiveTask, error: PlannerFailure): void {
+  // The proposal is terminal, so the local audit goes with it. The side panel
+  // keeps its own copy of the audit it was already sent, so the user can still
+  // inspect what was redacted before dismissing the session.
+  releaseTask(task);
+  task.session.send("PLAN_FAILED");
+  sendEvent({
+    type: "PLAN_FAILURE",
+    taskId: task.taskId,
+    error: { code: error.code, message: error.message },
+  });
+  publishState(task);
+}
+
+/**
+ * The planner leg: the sanitized observation goes to the gateway and a
+ * proposed plan comes back.
+ *
+ * Phase 3 ends at `awaiting_approval` -- the plan is shown, never executed.
+ * This runs only after `scanTask` has published a successful sanitization, so
+ * there is no path from a sanitization failure to a network call.
+ */
+async function planTask(task: ActiveTask, observation: SanitizedObservation): Promise<void> {
+  if (activeTask !== task || task.cancelled || !task.session.can("START_PLANNING")) return;
+
+  const settings = await loadPlannerSettings();
+  if (activeTask !== task || task.cancelled || !task.session.can("START_PLANNING")) return;
+
+  task.session.send("START_PLANNING");
+  publishState(task);
+
+  const controller = new AbortController();
+  task.plannerAbort = controller;
+  let result: PlannerResult;
   try {
+    result = await requestPlan({ settings, observation, signal: controller.signal });
+  } catch (error) {
+    result = {
+      ok: false,
+      code: "INTERNAL_ERROR",
+      message: safeErrorMessage(error, "The planner request failed."),
+    };
+  } finally {
+    if (task.plannerAbort === controller) task.plannerAbort = undefined;
+  }
+
+  // A Stop, a timeout, or a replacement task can land while the request is in
+  // flight. `PLAN_READY` and `PLAN_FAILED` are both only legal from
+  // `planning`, so this one guard covers the success and failure paths alike:
+  // a late plan for an abandoned session is dropped, never shown.
+  if (activeTask !== task || task.cancelled || !task.session.can("PLAN_READY")) return;
+
+  if (!result.ok) {
+    failPlan(task, result);
+    return;
+  }
+
+  task.session.send("PLAN_READY");
+  sendEvent({
+    type: "PLAN_RESULT",
+    taskId: task.taskId,
+    plan: result.plan,
+    meta: result.meta,
+  });
+  publishState(task);
+}
+
+async function scanTask(task: ActiveTask): Promise<void> {  try {
     const models = await task.modelManager.initialize(task.profile);
     await task.pixelWorkers.initialize(models, task.profile);
     currentTask(task);
@@ -390,6 +474,7 @@ async function scanTask(task: ActiveTask): Promise<void> {
       audit: auditView(task, result.observation, originalScreenshot),
     });
     publishState(task);
+    await planTask(task, result.observation);
   } catch (error) {
     // `failTask` no-ops once the task is no longer the active one, so release
     // here first: an already-replaced task must not keep its capture, models,
@@ -481,11 +566,50 @@ function closeAudit(taskId?: string): ExtensionResponse {
     return { ok: false, type: "ERROR", message: "No matching local audit exists." };
   }
   const task = activeTask;
+  task.cancelled = true;
   releaseTask(task);
+  // Dismissing the audit dismisses the whole session, including a proposal
+  // still awaiting approval: stop it first so RESET is reachable and no
+  // in-flight plan can resurface against a session the user has closed.
+  task.session.stop();
   if (task.session.can("RESET")) task.session.send("RESET");
   activeTask = null;
   sendEvent({ type: "AUDIT_CLOSED", taskId: task.taskId });
   return { ok: true, type: "ACK", taskId: task.taskId };
+}
+
+async function readPlannerSettings(): Promise<PlannerSettingsResponse> {
+  return { ok: true, type: "PLANNER_SETTINGS", settings: await loadPlannerSettings() };
+}
+
+async function writePlannerSettings(settings: PlannerSettings): Promise<PlannerSettingsResponse> {
+  try {
+    return { ok: true, type: "PLANNER_SETTINGS", settings: await savePlannerSettings(settings) };
+  } catch (error) {
+    return {
+      ok: false,
+      type: "ERROR",
+      // GatewayUrlError messages are authored here and safe to show verbatim;
+      // anything else is reported generically.
+      message: error instanceof GatewayUrlError
+        ? error.message
+        : "Those planner settings are not valid.",
+    };
+  }
+}
+
+async function probeGateway(): Promise<GatewayCheckResponse> {
+  const settings = await loadPlannerSettings();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GATEWAY_CHECK_TIMEOUT_MS);
+  try {
+    const result = await checkGateway(settings, controller.signal);
+    return result.ok
+      ? { ok: true, type: "GATEWAY_OK", providers: result.providers }
+      : { ok: false, type: "ERROR", message: result.message };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export default defineBackground(() => {
@@ -512,6 +636,24 @@ export default defineBackground(() => {
     if (message.type === "AUDIT_CLOSE") {
       sendResponse(closeAudit(message.taskId));
       return undefined;
+    }
+    if (message.type === "GET_PLANNER_SETTINGS") {
+      void readPlannerSettings().then(sendResponse);
+      return true;
+    }
+    if (message.type === "SAVE_PLANNER_SETTINGS") {
+      void writePlannerSettings(message.settings).then(sendResponse);
+      return true;
+    }
+    if (message.type === "CHECK_GATEWAY") {
+      void probeGateway().then(sendResponse).catch((error: unknown) => {
+        sendResponse({
+          ok: false,
+          type: "ERROR",
+          message: safeErrorMessage(error, "The gateway check failed."),
+        });
+      });
+      return true;
     }
     return undefined;
   });

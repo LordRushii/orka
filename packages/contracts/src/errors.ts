@@ -20,7 +20,12 @@ export const ErrorCodeSchema = z.enum([
   "MALFORMED_JSON",
   "NOT_FOUND",
   "SANITIZATION_FAILED",
+  "UNAUTHORIZED",
+  "FORBIDDEN_FIELD",
+  "UNKNOWN_PROVIDER",
   "PROVIDER_UNAVAILABLE",
+  "PROVIDER_TIMEOUT",
+  "PROVIDER_ERROR",
   "INTERNAL_ERROR",
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;

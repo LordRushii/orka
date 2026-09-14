@@ -5,11 +5,16 @@ import type {
 } from "@orka/privacy-engine";
 export type { RuntimeOverride } from "@orka/privacy-engine";
 import type {
+  ActionPlan,
+  PlanMetadata,
+  ProviderDescriptor,
   RedactionSummaryEntry,
   SanitizationFailure,
   SanitizedObservation,
   TaskState,
 } from "@orka/contracts";
+import type { PlannerFailureCode } from "./plannerClient.ts";
+import type { PlannerSettings } from "./settings.ts";
 
 export const EXTENSION_MESSAGE_TYPES = {
   START_TASK: "START_TASK",
@@ -19,6 +24,11 @@ export const EXTENSION_MESSAGE_TYPES = {
   SNAPSHOT_FAILURE: "SNAPSHOT_FAILURE",
   SANITIZATION_RESULT: "SANITIZATION_RESULT",
   SANITIZATION_FAILURE: "SANITIZATION_FAILURE",
+  PLAN_RESULT: "PLAN_RESULT",
+  PLAN_FAILURE: "PLAN_FAILURE",
+  GET_PLANNER_SETTINGS: "GET_PLANNER_SETTINGS",
+  SAVE_PLANNER_SETTINGS: "SAVE_PLANNER_SETTINGS",
+  CHECK_GATEWAY: "CHECK_GATEWAY",
   STOP_TASK: "STOP_TASK",
   AUDIT_CLOSE: "AUDIT_CLOSE",
   TASK_STATE: "TASK_STATE",
@@ -93,6 +103,33 @@ export type SanitizationFailureMessage = {
   error: SanitizationFailure;
 };
 
+/** The proposed plan, awaiting approval. Phase 3 stops here: nothing runs. */
+export type PlanResultMessage = {
+  type: "PLAN_RESULT";
+  taskId: string;
+  plan: ActionPlan;
+  meta: PlanMetadata;
+};
+
+export type PlanFailureMessage = {
+  type: "PLAN_FAILURE";
+  taskId: string;
+  error: { code: PlannerFailureCode; message: string };
+};
+
+export type GetPlannerSettingsMessage = {
+  type: "GET_PLANNER_SETTINGS";
+};
+
+export type SavePlannerSettingsMessage = {
+  type: "SAVE_PLANNER_SETTINGS";
+  settings: PlannerSettings;
+};
+
+export type CheckGatewayMessage = {
+  type: "CHECK_GATEWAY";
+};
+
 export type StopTaskMessage = {
   type: "STOP_TASK";
   taskId?: string;
@@ -128,6 +165,11 @@ export type ExtensionMessage =
   | SnapshotFailureMessage
   | SanitizationResultMessage
   | SanitizationFailureMessage
+  | PlanResultMessage
+  | PlanFailureMessage
+  | GetPlannerSettingsMessage
+  | SavePlannerSettingsMessage
+  | CheckGatewayMessage
   | StopTaskMessage
   | AuditCloseMessage
   | TaskStateMessage
@@ -136,6 +178,14 @@ export type ExtensionMessage =
 
 export type ExtensionResponse =
   | { ok: true; type: "ACK"; taskId?: string }
+  | { ok: false; type: "ERROR"; message: string };
+
+export type PlannerSettingsResponse =
+  | { ok: true; type: "PLANNER_SETTINGS"; settings: PlannerSettings }
+  | { ok: false; type: "ERROR"; message: string };
+
+export type GatewayCheckResponse =
+  | { ok: true; type: "GATEWAY_OK"; providers: ProviderDescriptor[] }
   | { ok: false; type: "ERROR"; message: string };
 
 export function isExtensionMessage(value: unknown): value is ExtensionMessage {

@@ -13,5 +13,11 @@ export default defineConfig({
       default_title: 'Open Orka',
     },
     permissions: ['activeTab', 'scripting', 'storage', 'sidePanel'],
+    // The default loopback gateway is granted up front so a local-only setup
+    // works with no extra prompt. Any other gateway is opt-in: the side panel
+    // requests it from a user gesture, and SECURITY-PRIVACY.md's transport
+    // rule limits that to https:// once it leaves the machine.
+    host_permissions: ['http://127.0.0.1:8787/*', 'http://localhost:8787/*'],
+    optional_host_permissions: ['https://*/*'],
   },
 });
