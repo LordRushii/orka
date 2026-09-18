@@ -11,3 +11,6 @@ bun.lockb.bak
 .env
 .env.*
 !.env.example
+
+# Local Freebuff agent state (project id, session metadata).
+.freebuff/
