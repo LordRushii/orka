@@ -9,6 +9,7 @@
   "scripts": {
     "dev:extension": "bun run --cwd apps/extension dev",
     "dev:gateway": "bun run --cwd apps/gateway dev",
+    "dev:fixtures": "bun run scripts/serve-fixtures.ts",
     "test": "bun test",
     "typecheck": "bun run --cwd packages/contracts typecheck && bun run --cwd packages/privacy-engine typecheck && bun run --cwd packages/provider-adapters typecheck && bun run --cwd apps/gateway typecheck && bun run --cwd apps/extension compile"
   },
