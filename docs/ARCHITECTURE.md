@@ -38,6 +38,7 @@ The project uses deep modules: callers use small, stable interfaces while the co
 | Planner Gateway | `plan(observation): ActionPlan` | Routes safe context to one provider adapter, validates output, retains nothing. |
 | Provider Adapter | `plan(observation, config): ProviderResult` | Hides OpenAI-compatible, Anthropic, DeepSeek, and LM Studio differences. |
 | Safe Action Executor | `execute(plan, context): ExecutionRun`, `stop(reason): void` | Revalidates each target on the live page, enforces policy and confirmation, performs bounded actions, and reports safe outcomes. `ExecutionRun` carries the per-action outcomes *and* the terminal status, so no caller has to infer why a run ended. |
+| Local Reporting | `measure(phase, work): Promise<T>`, `describeOutboundRequest(body): OutboundView`, `summarizeConfidenceBands(detections)` | Produces the demo's local evidence: aggregated phase timings, the request described by shape, and the audit view's confidence bands and model versions. Numbers and field names only -- no module here has a field for page content. |
 
 ## On-device privacy pipeline
 
@@ -91,6 +92,34 @@ being cut off by the session's own action cap.
 
 Page text, OCR output, labels, and visual instructions remain untrusted data: the executor never
 takes an instruction from the page, so injected text can raise a confirmation but never lower one.
+
+## Local reporting and the demo
+
+Phase 5 turns the working pipeline into something a person can watch and check. Three modules carry
+that, and all three are shaped by the same rule: **show the shape of what happened, never a copy of
+it.**
+
+- **Local metrics** (`apps/extension/shared/metrics.ts`) times each phase -- capture, scan and
+  redact, gateway round trip, planner, execution -- into one aggregate per Task Session, alongside the
+  runtime mode, the category counts the observation already carries, a local JS heap sample when the
+  browser reports one, and the outcome. A sample is a phase name, a duration, and a count; there is no
+  field for text, a URL, or a detection location. It lives for one session and is never persisted.
+- **The outbound view** (`apps/extension/shared/outboundView.ts`) describes the actual gateway request
+  by field path, kind, and size. It is derived from the request body, so it cannot drift into a
+  flattering description of a payload that changed, and it refuses to print a value at any depth --
+  a panel that showed the payload in order to prove the payload is sanitized would have moved the
+  problem rather than solved it.
+- **Confidence bands** (`apps/extension/shared/localReport.ts`) reduce the Redaction Map to high,
+  medium, and low counts per category. Enough to judge a redaction; not enough to rebuild the map.
+
+**The honest limit.** The SIH weights include three figures -- visual context, PII recall/precision,
+and redaction precision -- that need labelled ground truth, which a browser does not have. The panel
+marks them *not measurable locally* and the benchmark corpus is deferred, so the demo reports blanks
+rather than estimates. `SIH_WEIGHTS` carries a `measurableLocally` flag for exactly this reason, and a
+test asserts that only the two genuinely measurable weights claim to be measured.
+
+`docs/PHASE-5-DEMO.md` is the runbook; `docs/PHASE-5-HARDENING.md` maps each hardening item to the
+test that verifies it, and says plainly which ones need a person.
 
 ## Hardware adaptivity
 

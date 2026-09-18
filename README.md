@@ -46,6 +46,22 @@ bun test        # unit and contract tests
 bun run typecheck
 ```
 
+## Running the demo
+
+```bash
+bun run dev:gateway      # planner gateway
+bun run dev:fixtures     # synthetic demo site on http://127.0.0.1:8788 and :8789
+bun run --cwd apps/extension build
+```
+
+Open **http://127.0.0.1:8788/phase5-demo.html** with the unpacked extension loaded, and follow
+[docs/PHASE-5-DEMO.md](docs/PHASE-5-DEMO.md): five scenarios, each with the exact fixture, the
+confirmations to expect, and what the page should have seen. Everything runs on the deterministic
+`mock` provider, so the demo needs no key, no local model, and no outbound request.
+
+Hardening status -- which items a test verifies and which need a person -- is in
+[docs/PHASE-5-HARDENING.md](docs/PHASE-5-HARDENING.md).
+
 ## Non-negotiables
 
 - Sanitization completes before any network request to the planner gateway.
