@@ -126,6 +126,8 @@ export type ExecutionReport =
       action: Action;
       detail: string;
       outcome: ActionOutcome;
+      /** How long the step took, for the session's local metrics. */
+      durationMs?: number;
     }
   | {
       type: "CONFIRMATION_REQUEST";
@@ -158,6 +160,8 @@ export type ExecutorDeps = {
   /** Resolves when the user decides, or when `signal` aborts. */
   requestApproval(request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalDecision>;
   report(event: ExecutionReport): void;
+  /** Clock for per-action timings; injectable so a test can drive it. */
+  now?: () => number;
 };
 
 /**
@@ -220,10 +224,28 @@ export function createActionExecutor(deps: ExecutorDeps): ActionExecutor {
       let executed = 0;
       let halt: Omit<ExecutionRun, "outcomes"> | null = null;
 
+      /**
+       * How long the current step took, for the session's local metrics. Fixed
+       * up on the action being processed: `record` is only ever called for the
+       * action the loop is on, apart from the closing pass that accounts for
+       * steps the run never reached (which have no duration to report).
+       */
+      const now = deps.now ?? Date.now;
+      let stepStartedAt: number | undefined;
+
       const record = (action: Action, index: number, outcome: ActionOutcome, detail: string): void => {
         outcomes.push(outcome);
         recorded.add(index);
-        deps.report({ type: "ACTION_OUTCOME", taskId, actionIndex: index, action, detail, outcome });
+        const durationMs = stepStartedAt === undefined ? undefined : Math.max(0, now() - stepStartedAt);
+        deps.report({
+          type: "ACTION_OUTCOME",
+          taskId,
+          actionIndex: index,
+          action,
+          detail,
+          outcome,
+          ...(durationMs === undefined ? {} : { durationMs }),
+        });
       };
 
       /**
@@ -427,6 +449,7 @@ export function createActionExecutor(deps: ExecutorDeps): ActionExecutor {
         for (let index = 0; index < actions.length; index += 1) {
           if (halt) break;
           const action = actions[index]!;
+          stepStartedAt = now();
 
           if (abort.signal.aborted) {
             stop(requestedStop ?? "user", "You stopped the task.");
@@ -703,6 +726,10 @@ export function createActionExecutor(deps: ExecutorDeps): ActionExecutor {
             }
           }
         }
+
+        // The run is over: from here every `record` is the accounting pass for
+        // steps that never ran, and none of those has a duration.
+        stepStartedAt = undefined;
 
         if (!halt) {
           halt = {
