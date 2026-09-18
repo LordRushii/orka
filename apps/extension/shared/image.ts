@@ -53,15 +53,14 @@ export function createBrowserImageEncoder(): ImageEncoder {
       pixels.set(image.data);
       const imageData = new ImageData(pixels, image.width, image.height);
       context.putImageData(imageData, 0, 0);
-      let blob: Blob;
-      try {
-        blob = await canvas.convertToBlob({ type: "image/webp", quality: 0.88 });
-      } catch {
-        blob = await canvas.convertToBlob({ type: "image/png" });
-      }
-      const mimeType = blob.type === "image/png" ? "image/png" : "image/webp";
+      // PNG only: some vision-capable OpenAI-compatible servers (LM Studio's
+      // local runtime among them) reject WebP outright rather than falling
+      // back, so a format only some providers can decode is not a safe
+      // default here. The observation carries no provider identity at
+      // encode time, so the format has to work everywhere.
+      const blob = await canvas.convertToBlob({ type: "image/png" });
       return {
-        mimeType,
+        mimeType: "image/png",
         width: image.width,
         height: image.height,
         dataBase64: arrayBufferToBase64(await blob.arrayBuffer()),
