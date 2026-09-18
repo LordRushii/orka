@@ -32,7 +32,12 @@ export class CaptureAuthorityError extends Error {
   }
 }
 
-function httpOrigin(url: string | undefined): string | undefined {
+/**
+ * The bare http(s) origin of a URL, or undefined for anything else. Shared
+ * with the executor, which uses it to notice that a click left the page for
+ * another site -- the one thing that must never continue on its own.
+ */
+export function urlOrigin(url: string | undefined): string | undefined {
   if (!url || !/^https?:\/\//i.test(url)) return undefined;
   try {
     return new URL(url).origin;
@@ -46,7 +51,7 @@ export function createCaptureAuthority(
   id: string,
   now = Date.now(),
 ): CaptureAuthority {
-  const origin = httpOrigin(tab.url);
+  const origin = urlOrigin(tab.url);
   if (!tab.id || tab.windowId === undefined || tab.windowId < 0 || !origin) {
     throw new CaptureAuthorityError("Open a normal HTTP(S) page, then reopen Orka from the toolbar.");
   }
@@ -63,7 +68,7 @@ export async function validateCaptureAuthority(
   }
 
   const tab = await browser.getTab(authority.tabId);
-  if (tab.id !== authority.tabId || tab.windowId !== authority.windowId || httpOrigin(tab.url) !== authority.origin) {
+  if (tab.id !== authority.tabId || tab.windowId !== authority.windowId || urlOrigin(tab.url) !== authority.origin) {
     throw new CaptureAuthorityError("The original page changed. Reopen Orka from the toolbar.");
   }
 
