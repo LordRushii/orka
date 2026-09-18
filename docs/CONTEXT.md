@@ -31,3 +31,13 @@
 **Local Value**: a value the user keeps in extension memory for one Task Session and refers to by bracketed name (`[PHONE_1]`). The Planner only ever sees the name; the executor resolves it at the moment of insertion, after a Confirmation.
 
 **Provider Profile**: user-selected configuration identifying a Planner adapter and its endpoint/credentials; it does not imply permission to change providers automatically.
+
+**Local Metrics**: the aggregated timings, runtime mode, category counts, safe resource sample, and outcome of one Task Session, held in memory for that session and never persisted. A metric is a phase name and a number; there is no field for page content.
+
+**Confidence Band**: how sure a Detection was, reported as high, medium, or low rather than as a score or a position. Bands let the Local Audit show the quality of a redaction without publishing the Redaction Map.
+
+**Outbound View**: a description of the single gateway request by field path, kind, and size -- never by value -- derived from the request body itself. It is how the demo shows what left the device without becoming a second copy of it.
+
+**Fail-Closed Reason**: the typed failure (`DETECTOR_TIMEOUT`, `MODEL_LOAD_FAILED`, `CAPTURE_FAILED`, `PROVIDER_TIMEOUT`, ...) that stopped a Task Session before or instead of a planner request. Every such path ends the session rather than continuing with partial results.
+
+**Not Measurable Locally**: the standing answer for the SIH weights that need labelled ground truth (visual context, PII recall/precision, redaction precision). The extension reports them as unavailable rather than estimating, until the benchmark corpus Phase 5 defers exists.
