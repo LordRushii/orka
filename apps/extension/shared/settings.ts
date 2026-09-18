@@ -21,9 +21,9 @@ export const PLANNER_SETTINGS_KEY = "orka.planner.settings";
 export const DEFAULT_PLANNER_SETTINGS: PlannerSettings = {
   gatewayUrl: "http://127.0.0.1:8787",
   gatewayToken: "orka-dev-token",
-  // The deterministic in-process adapter: a fresh install can complete a full
-  // task round-trip with no key, no local model, and no outbound request.
-  providerId: "mock",
+  // The user's own loopback LM Studio server: no key required, and nothing
+  // ever leaves the machine unless the operator switches to a cloud provider.
+  providerId: "lmstudio",
   model: "",
 };
 

@@ -59,8 +59,8 @@ describe("gateway URL transport rule", () => {
 });
 
 describe("planner settings", () => {
-  test("a fresh install defaults to the in-process mock over loopback", () => {
-    expect(DEFAULT_PLANNER_SETTINGS.providerId).toBe("mock");
+  test("a fresh install defaults to the user's own loopback LM Studio server", () => {
+    expect(DEFAULT_PLANNER_SETTINGS.providerId).toBe("lmstudio");
     expect(normalizeGatewayUrl(DEFAULT_PLANNER_SETTINGS.gatewayUrl))
       .toBe(DEFAULT_PLANNER_SETTINGS.gatewayUrl);
   });

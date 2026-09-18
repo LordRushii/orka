@@ -27,10 +27,11 @@ function trimmed(env: Env, key: string): string | undefined {
 function parseEnabled(env: Env): ProviderId[] {
   const raw = trimmed(env, "ORKA_ENABLED_PROVIDERS");
   if (!raw) {
-    // Default to what can run with no credentials at all: the deterministic
-    // mock and the user's own loopback LM Studio server. Cloud providers are
-    // opt-in, so a fresh gateway cannot make an outbound call by accident.
-    return ["mock", "lmstudio"];
+    // Default to the user's own loopback LM Studio server: no credentials
+    // needed, and no outbound call happens without the operator opting a
+    // cloud provider in via this same variable. The deterministic mock stays
+    // available for tests but is never enabled by default in a real gateway.
+    return ["lmstudio"];
   }
   const ids = raw
     .split(",")

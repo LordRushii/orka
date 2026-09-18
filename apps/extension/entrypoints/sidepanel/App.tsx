@@ -35,7 +35,7 @@ const RUNTIMES: readonly { id: RuntimeOverride; label: string }[] = [
 ];
 
 const PROVIDER_LABEL: Record<ProviderId, string> = {
-  mock: "Mock (offline, deterministic)",
+  mock: "Mock (dev/test only, not enabled by default)",
   lmstudio: "LM Studio (local)",
   deepseek: "DeepSeek (cloud)",
   "openai-compatible": "OpenAI-compatible (cloud)",
