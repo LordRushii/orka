@@ -138,6 +138,38 @@
   border-top: 1px solid #2c2f36;
 }
 
+.value-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.value-row input {
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid #33363d;
+  background: #16171b;
+  color: #e6e6e6;
+}
+
+.value-row .button {
+  padding: 6px 8px;
+  font-size: 0.72rem;
+}
+
+/* A step waiting on the user is the one thing that must not be missed. */
+.card--prompt {
+  border-color: #4c8bf5;
+  box-shadow: 0 0 0 1px #1d3b66 inset;
+}
+
+.card--prompt h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
 .button {
   border: none;
   border-radius: 8px;

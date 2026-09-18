@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type {
-  ActionPlan,
-  PlanMetadata,
-  ProviderDescriptor,
-  SanitizationFailure,
-  SanitizedObservation,
-  TaskState,
+import {
+  type Action,
+  type ActionOutcome,
+  type ActionPlan,
+  type ConfirmationKind,
+  type ExecutionRunStatus,
+  type PlanMetadata,
+  type ProviderDescriptor,
+  type Risk,
+  type SanitizationFailure,
+  type SanitizedObservation,
+  type StopReason,
+  type TaskState,
 } from "@orka/contracts";
 import type {
   AuditClosedMessage,
+  ConfirmationDecisionMessage,
   ExtensionMessage,
   GatewayCheckResponse,
   LocalAuditView,
@@ -20,7 +27,14 @@ import type {
   RuntimeOverride,
   TaskStateMessage,
 } from "../../shared/messages.ts";
+import {
+  collectPrivateValues,
+  emptyPrivateValueRow,
+  type PrivateValueRow,
+} from "../../shared/privateValues.ts";
 import { DEFAULT_PLANNER_SETTINGS, type PlannerSettings } from "../../shared/settings.ts";
+
+export type { PrivateValueRow } from "../../shared/privateValues.ts";
 
 const ACTIVE_STATES: readonly TaskState[] = [
   "scanning",
@@ -29,6 +43,40 @@ const ACTIVE_STATES: readonly TaskState[] = [
   "awaiting_approval",
   "executing",
 ];
+
+/** One line of the run log: what the plan proposed and what came of it. */
+export type ActionOutcomeView = {
+  actionIndex: number;
+  action: Action;
+  detail: string;
+  outcome: ActionOutcome;
+};
+
+/** A step the executor is waiting on the user to answer. */
+export type PendingPrompt =
+  | {
+      kind: "confirm";
+      actionIndex: number;
+      confirmation: ConfirmationKind;
+      detail: string;
+      risk: Risk;
+    }
+  | {
+      kind: "ask_user";
+      actionIndex: number;
+      prompt: string;
+      detail: string;
+      risk: Risk;
+    };
+
+export type RunSummary = {
+  status: ExecutionRunStatus;
+  summary: string;
+  stopReason?: StopReason;
+  failure?: { code: string; message: string };
+};
+
+
 
 function isTaskStateMessage(message: ExtensionMessage): message is TaskStateMessage {
   return message.type === "TASK_STATE";
@@ -93,6 +141,15 @@ export function useTaskSession() {
   const [settings, setSettings] = useState<PlannerSettings>(DEFAULT_PLANNER_SETTINGS);
   const [providers, setProviders] = useState<ProviderDescriptor[]>();
   const [gatewayStatus, setGatewayStatus] = useState<string>();
+  const [outcomes, setOutcomes] = useState<ActionOutcomeView[]>([]);
+  const [pending, setPending] = useState<PendingPrompt>();
+  const [run, setRun] = useState<RunSummary>();
+  const [privateValues, setPrivateValues] = useState<PrivateValueRow[]>([emptyPrivateValueRow()]);
+  /**
+   * The names (never the values) this task was started with, so the panel can
+   * say whether a plan's `[PHONE_1]` reference will resolve.
+   */
+  const [declaredValueNames, setDeclaredValueNames] = useState<string[]>([]);
 
   useEffect(() => {
     const listener = (message: unknown) => {
@@ -108,6 +165,7 @@ export function useTaskSession() {
         setAudit(event.audit);
         setObservation(event.observation);
         setFailure(undefined);
+        setRequestError(undefined);
       } else if (isSanitizationFailure(event)) {
         setTaskId(event.taskId);
         setState("failed");
@@ -126,10 +184,57 @@ export function useTaskSession() {
         setPlan(undefined);
         setPlanMeta(undefined);
         setPlanError(event.error);
+      } else if (event.type === "EXECUTION_STARTED") {
+        setTaskId(event.taskId);
+        setState("executing");
+        setOutcomes([]);
+        setRun(undefined);
+        setPending(undefined);
+      } else if (event.type === "ACTION_OUTCOME") {
+        setOutcomes((previous) => [
+          ...previous,
+          {
+            actionIndex: event.actionIndex,
+            action: event.action,
+            detail: event.detail,
+            outcome: event.outcome,
+          },
+        ]);
+      } else if (event.type === "CONFIRMATION_REQUEST") {
+        setPending({
+          kind: "confirm",
+          actionIndex: event.actionIndex,
+          confirmation: event.confirmation,
+          detail: event.detail,
+          risk: event.risk,
+        });
+      } else if (event.type === "ASK_USER") {
+        setPending({
+          kind: "ask_user",
+          actionIndex: event.actionIndex,
+          prompt: event.prompt,
+          detail: event.detail,
+          risk: event.risk,
+        });
+      } else if (event.type === "EXECUTION_FINISHED") {
+        setPending(undefined);
+        setDeclaredValueNames([]);
+        setRun({
+          status: event.status,
+          summary: event.summary,
+          stopReason: event.stopReason,
+          failure: event.failure,
+        });
+        // A finished run has no private values left in the background; the
+        // form does not keep a second copy.
+        setPrivateValues([emptyPrivateValueRow()]);
       } else if (event.type === "TASK_STOPPED") {
         setState("stopped");
         setAudit(undefined);
         setObservation(undefined);
+        setPending(undefined);
+        setPrivateValues([emptyPrivateValueRow()]);
+        setDeclaredValueNames([]);
       } else if (isAuditClosed(event)) {
         setTaskId(null);
         setState("idle");
@@ -139,6 +244,11 @@ export function useTaskSession() {
         setPlan(undefined);
         setPlanMeta(undefined);
         setPlanError(undefined);
+        setOutcomes([]);
+        setPending(undefined);
+        setRun(undefined);
+        setPrivateValues([emptyPrivateValueRow()]);
+        setDeclaredValueNames([]);
       }
     };
 
@@ -157,32 +267,48 @@ export function useTaskSession() {
       });
   }, []);
 
-  const start = useCallback(async (task: string, runtimeOverride: RuntimeOverride) => {
-    const nextTaskId = crypto.randomUUID();
-    setRequestError(undefined);
-    setFailure(undefined);
-    setPlan(undefined);
-    setPlanMeta(undefined);
-    setPlanError(undefined);
-    const authority = await browser.runtime.sendMessage({ type: "GET_CAPTURE_AUTHORITY" });
-    if (!authority?.ok || typeof authority.authorityId !== "string") {
-      setRequestError(authority?.message ?? "Reopen Orka from the toolbar before starting a task.");
-      return false;
-    }
-    const response = await browser.runtime.sendMessage({
-      type: "START_TASK",
-      taskId: nextTaskId,
-      task,
-      runtime: runtimeOverride,
-      captureAuthorityId: authority.authorityId,
-    });
-    if (!response?.ok) {
-      setRequestError(response?.message ?? "Task Session could not start.");
-      return false;
-    }
-    setTaskId(nextTaskId);
-    return true;
-  }, []);
+  const start = useCallback(
+    async (task: string, runtimeOverride: RuntimeOverride) => {
+      const collected = collectPrivateValues(privateValues);
+      if (!collected.ok) {
+        setRequestError(collected.message);
+        return false;
+      }
+      const nextTaskId = crypto.randomUUID();
+      setRequestError(undefined);
+      setFailure(undefined);
+      setPlan(undefined);
+      setPlanMeta(undefined);
+      setPlanError(undefined);
+      setOutcomes([]);
+      setPending(undefined);
+      setRun(undefined);
+      const authority = await browser.runtime.sendMessage({ type: "GET_CAPTURE_AUTHORITY" });
+      if (!authority?.ok || typeof authority.authorityId !== "string") {
+        setRequestError(authority?.message ?? "Reopen Orka from the toolbar before starting a task.");
+        return false;
+      }
+      const response = await browser.runtime.sendMessage({
+        type: "START_TASK",
+        taskId: nextTaskId,
+        task,
+        runtime: runtimeOverride,
+        captureAuthorityId: authority.authorityId,
+        sensitiveValues: collected.values,
+      });
+      if (!response?.ok) {
+        setRequestError(response?.message ?? "Task Session could not start.");
+        return false;
+      }
+      // The values live in the background for this session; this form keeps no
+      // second copy of them -- only their names, so it can explain the plan.
+      setDeclaredValueNames(Object.keys(collected.values));
+      setPrivateValues([emptyPrivateValueRow()]);
+      setTaskId(nextTaskId);
+      return true;
+    },
+    [privateValues],
+  );
 
   const stop = useCallback(async () => {
     if (!taskId) return false;
@@ -191,6 +317,7 @@ export function useTaskSession() {
       setRequestError(response?.message ?? "Task Session could not stop.");
       return false;
     }
+    setPending(undefined);
     return true;
   }, [taskId]);
 
@@ -201,8 +328,44 @@ export function useTaskSession() {
       setRequestError(response?.message ?? "Local audit could not close.");
       return false;
     }
+    setOutcomes([]);
+    setPending(undefined);
+    setRun(undefined);
     return true;
   }, [taskId]);
+
+  /** The user approved the proposed plan: hand it to the executor. */
+  const approve = useCallback(async () => {
+    if (!taskId) return false;
+    const response = await browser.runtime.sendMessage({ type: "APPROVE_PLAN", taskId });
+    if (!response?.ok) {
+      setRequestError(response?.message ?? "That plan could not be started.");
+      return false;
+    }
+    return true;
+  }, [taskId]);
+
+  /** Answers the step the executor is paused on. */
+  const decide = useCallback(
+    async (approved: boolean, answer?: string) => {
+      if (!taskId || !pending) return false;
+      const message: ConfirmationDecisionMessage = {
+        type: "CONFIRMATION_DECISION",
+        taskId,
+        actionIndex: pending.actionIndex,
+        approved,
+        ...(answer === undefined ? {} : { answer }),
+      };
+      setPending(undefined);
+      const response = await browser.runtime.sendMessage(message);
+      if (!response?.ok) {
+        setRequestError(response?.message ?? "That decision could not be delivered.");
+        return false;
+      }
+      return true;
+    },
+    [pending, taskId],
+  );
 
   const saveSettings = useCallback(async (next: PlannerSettings) => {
     setGatewayStatus(undefined);
@@ -260,10 +423,18 @@ export function useTaskSession() {
       settings,
       providers,
       gatewayStatus,
+      outcomes,
+      pending,
+      run,
+      privateValues,
+      setPrivateValues,
+      declaredValueNames,
       canStop,
       start,
       stop,
       closeAudit,
+      approve,
+      decide,
       saveSettings,
       checkGateway,
     }),
@@ -281,10 +452,17 @@ export function useTaskSession() {
       settings,
       providers,
       gatewayStatus,
+      outcomes,
+      pending,
+      run,
+      privateValues,
+      declaredValueNames,
       canStop,
       start,
       stop,
       closeAudit,
+      approve,
+      decide,
       saveSettings,
       checkGateway,
     ],
