@@ -28,6 +28,8 @@ packages/
 
 Read [PRD.md](docs/PRD.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [TECH-STACK.md](docs/TECH-STACK.md), and [SECURITY-PRIVACY.md](docs/SECURITY-PRIVACY.md) before implementation. The build order is in [phases](phases/).
 
+V1 (phases 1-5) is complete. The proposed next stage -- a multi-round planning loop, redaction speed/accuracy work, and a conversational side panel -- is drafted in [docs/V2-PLAN.md](docs/V2-PLAN.md); it has open scope decisions flagged in that document that need sign-off before implementation starts.
+
 ## Running it locally
 
 ```bash
