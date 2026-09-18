@@ -37,7 +37,7 @@ The project uses deep modules: callers use small, stable interfaces while the co
 | Hardware Profile | `selectRuntime(): RuntimeProfile` | Chooses WebGPU, balanced, or WASM based on availability and a local warm-up. |
 | Planner Gateway | `plan(observation): ActionPlan` | Routes safe context to one provider adapter, validates output, retains nothing. |
 | Provider Adapter | `plan(observation, config): ProviderResult` | Hides OpenAI-compatible, Anthropic, DeepSeek, and LM Studio differences. |
-| Safe Action Executor | `proposeAndExecute(plan): ActionOutcome` | Revalidates targets, enforces policy/confirmation, and performs browser actions. |
+| Safe Action Executor | `execute(plan, context): ExecutionRun`, `stop(reason): void` | Revalidates each target on the live page, enforces policy and confirmation, performs bounded actions, and reports safe outcomes. `ExecutionRun` carries the per-action outcomes *and* the terminal status, so no caller has to infer why a run ended. |
 
 ## On-device privacy pipeline
 
@@ -54,6 +54,43 @@ The project uses deep modules: callers use small, stable interfaces while the co
 `SanitizedObservation` contains: redacted task text, sanitized screenshot, sanitized visible accessibility snapshot, coarse redaction categories/locations when needed, current URL origin (not query string), and prior approved action summaries.
 
 `ActionPlan v1` contains: `navigate`, `click`, `scroll`, `type`, `select`, `ask_user`, or `done`; every action includes a reason, risk, and semantic target evidence. The gateway rejects prose-only or invalid output. The extension rejects actions whose live DOM target does not match the claimed role, accessible name, and bounding box.
+
+## Safe action execution
+
+An approved `ActionPlan` is a proposal the local executor has to satisfy, one action at a time. The
+side panel sends only user decisions through `execute(plan, context)` and `stop(reason)`; everything
+else stays inside the extension, in three parts:
+
+- **Policy** (`apps/extension/shared/executorPolicy.ts`) is pure: given the facts about a live
+element, it decides allow, confirm, or refuse. Refused outright: credentials, file inputs and
+uploads, CAPTCHA and human-verification controls, install prompts, targets that cite evidence the
+user never approved, and anything aimed at a region the privacy engine redacted. Confirmed
+individually: submission, downloads, permission prompts, purchases, sends, deletions,
+account/security changes, every typing and selection, every local-value insertion, and every
+continuation onto a new origin. The phase brief's "no purchases, deletes, messaging, or
+permission expansion" rule is enforced as *never without an explicit per-step decision* rather
+than as a flat refusal -- the same reading as `SECURITY-PRIVACY.md`'s action policy, and the
+stricter one where the two overlap: the executor never takes such a step on its own.
+- **Live revalidation** happens immediately before each action, not at approval time. The target is
+re-resolved against the DOM and must still match role, accessible name, visible and enabled state,
+and a bounding box within tolerance. That visible/enabled/interactable state is read from the live
+element rather than carried by the plan: a plan's claim about itself is not evidence, and hidden
+elements never enter the observation at capture, so the citation is role, name, evidence ID, and box
+only. Missing, hidden, disabled, moved, or duplicated targets are
+refused, and the run stops rather than trying the next step against a page it no longer understands.
+A target cited by a redaction placeholder (`[PHONE]`) is matched by role and box, because the live
+page necessarily still carries the real name.
+- **Bounded scope**: one active tab, no hidden or background-tab action, at most 10 browser actions,
+at most 90 seconds, and no automatic cross-origin continuation.
+
+Sensitive Values stay local throughout. A plan may name one by bracket (`[PHONE_1]`); the executor
+resolves it in memory right before the keystroke, only after the user confirms that variable by name,
+and never writes the resolved value into an outcome, an event, an audit, or a request. `done` ends
+the Task Session and clears them; a plan that ran to its end still reaches `completed` rather than
+being cut off by the session's own action cap.
+
+Page text, OCR output, labels, and visual instructions remain untrusted data: the executor never
+takes an instruction from the page, so injected text can raise a confirmation but never lower one.
 
 ## Hardware adaptivity
 
