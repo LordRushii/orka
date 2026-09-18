@@ -311,6 +311,202 @@ export const MOCK_FIXTURES = {
       { type: "done", reason: "Installed.", risk: "low", summary: "Installed the helper." },
     ],
   }),
+
+  /*
+   * Phase 5 fixtures: one per scenario in phases/05-demo-and-hardening.md.
+   *
+   * These cite the exact geometry of
+   * `apps/extension/test/fixtures/phase5-demo.html`, the synthetic demo site.
+   * Its form has no border, so a child's box is the form origin plus its
+   * offset, with nothing to adjust for. Select a fixture with the panel's
+   * Model override and keep the window at 1280x800 or larger at 100% zoom.
+   */
+
+  /**
+   * Scenario 1 -- Open a site: navigate, and stop there. The plan opens the
+   * site and says what it did not do, which is the part worth demonstrating:
+   * no sign-in, no social feature, nothing beyond the destination.
+   */
+  "phase5-open-site": JSON.stringify({
+    actions: [
+      {
+        type: "navigate",
+        reason: "Open the site the user asked for.",
+        risk: "low",
+        url: "http://127.0.0.1:8788/phase5-demo.html",
+      },
+      {
+        type: "done",
+        reason: "The site is open.",
+        risk: "low",
+        summary:
+          "Opened http://127.0.0.1:8788/phase5-demo.html. That is all the task asked for: I did not sign in, and no account was touched.",
+      },
+    ],
+  }),
+
+  /**
+   * Scenario 2 -- Explain a new app: no browser action at all. The answer is
+   * the summary of a `done`, which is the only way a plan can hand a person a
+   * sentence, and it describes only what the sanitized observation showed.
+   */
+  "phase5-explain-app": JSON.stringify({
+    actions: [
+      {
+        type: "done",
+        reason: "Explain the visible controls from what was actually captured.",
+        risk: "low",
+        summary:
+          "Controls on this page: Home and Pricing links; a search field with a Search button; three result links; a \"Sort results\" dropdown (Most relevant, Newest, Oldest) with an Apply filters button; and a request form with City and a locally redacted email field, plus Submit request. I acted on none of them.",
+      },
+    ],
+  }),
+
+  /**
+   * Scenario 3 -- Find and summarize: search, open one result, summarize it.
+   * Typing is confirmed, the link is a plain navigation step, and the answer
+   * is the summary.
+   */
+  "phase5-find-summarize": JSON.stringify({
+    actions: [
+      {
+        type: "type",
+        reason: "Search the knowledge base for the topic the user named.",
+        risk: "medium",
+        target: {
+          role: "textbox",
+          accessibleName: "Search the knowledge base",
+          box: { x: 40, y: 100, width: 320, height: 30 },
+        },
+        value: "redaction",
+      },
+      {
+        type: "click",
+        reason: "Open the result that answers the request.",
+        risk: "low",
+        target: {
+          role: "link",
+          accessibleName: "Result: Local redaction before transmission",
+          box: { x: 40, y: 150, width: 300, height: 20 },
+        },
+      },
+      {
+        type: "done",
+        reason: "Summarize the specified results.",
+        risk: "low",
+        summary:
+          "The result says that page content is redacted locally before any request is made, and that the only things sent onward are the sanitized observation and the task text.",
+      },
+    ],
+  }),
+
+  /**
+   * Scenario 4 -- Search and filter: a selection and a confirmed apply. Both
+   * are addressed semantically; neither is a coordinate.
+   */
+  "phase5-filter-sort": JSON.stringify({
+    actions: [
+      {
+        type: "select",
+        reason: "Sort the results the way the user asked.",
+        risk: "medium",
+        target: {
+          role: "combobox",
+          accessibleName: "Sort results",
+          box: { x: 40, y: 250, width: 200, height: 32 },
+        },
+        value: "Newest",
+      },
+      {
+        type: "click",
+        reason: "Apply the filter selection.",
+        risk: "medium",
+        target: {
+          role: "button",
+          accessibleName: "Apply filters",
+          box: { x: 260, y: 250, width: 140, height: 32 },
+        },
+      },
+      {
+        type: "done",
+        reason: "Filtering finished.",
+        risk: "low",
+        summary: "Sorted by Newest and applied the filters.",
+      },
+    ],
+  }),
+
+  /**
+   * Scenario 5 -- Synthetic form with a private value. The email field is
+   * redacted locally even while empty, so the plan can only name it by
+   * placeholder and can only fill it from a value the user saved. The saved
+   * value is resolved in the browser, after approval, and never transmitted.
+   */
+  "phase5-form": JSON.stringify({
+    actions: [
+      {
+        type: "type",
+        reason: "Fill in the city field.",
+        risk: "medium",
+        target: {
+          role: "textbox",
+          accessibleName: "City",
+          box: { x: 48, y: 338, width: 240, height: 30 },
+        },
+        value: "Berlin",
+      },
+      {
+        type: "type",
+        reason: "Fill the email field from the value the user saved for this task.",
+        risk: "medium",
+        target: {
+          role: "textbox",
+          accessibleName: "[EMAIL]",
+          box: { x: 48, y: 398, width: 240, height: 30 },
+        },
+        value: "[EMAIL_1]",
+      },
+      {
+        type: "click",
+        reason: "Submit the request form.",
+        risk: "medium",
+        target: {
+          role: "button",
+          accessibleName: "Submit request",
+          box: { x: 48, y: 450, width: 160, height: 32 },
+        },
+      },
+      {
+        type: "done",
+        reason: "The form is sent.",
+        risk: "low",
+        summary:
+          "Filled City with the value I proposed, and the email field from your saved [EMAIL_1]. The saved value was resolved in this browser, after your approval, and never left the device.",
+      },
+    ],
+  }),
+
+  /** A confirmed purchase, so the demo can show the other half of the policy. */
+  "phase5-purchase": JSON.stringify({
+    actions: [
+      {
+        type: "click",
+        reason: "Open the paid plan the page offers.",
+        risk: "high",
+        target: {
+          role: "button",
+          accessibleName: "Upgrade to paid plan",
+          box: { x: 480, y: 310, width: 180, height: 32 },
+        },
+      },
+      {
+        type: "done",
+        reason: "Nothing was purchased.",
+        risk: "low",
+        summary: "The upgrade step needed your decision; if you declined, nothing ran.",
+      },
+    ],
+  }),
 } as const satisfies Record<string, string>;
 
 export type MockFixtureName = keyof typeof MOCK_FIXTURES;

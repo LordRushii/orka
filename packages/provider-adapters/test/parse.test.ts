@@ -114,6 +114,89 @@ describe("parseActionPlan: the Phase 4 browser-check fixtures stay runnable", ()
   });
 });
 
+describe("parseActionPlan: the Phase 5 demo fixtures stay runnable", () => {
+  /**
+   * `docs/PHASE-5-DEMO.md` drives these through the real extension against the
+   * synthetic demo page, so a fixture that stopped parsing would break the
+   * demonstration silently -- and a demo that fails live is worse than no demo.
+   */
+  const fixtures = [
+    "phase5-open-site",
+    "phase5-explain-app",
+    "phase5-find-summarize",
+    "phase5-filter-sort",
+    "phase5-form",
+    "phase5-purchase",
+  ] as const;
+
+  for (const fixture of fixtures) {
+    test(`"${fixture}" is a contract-valid plan`, () => {
+      const result = parse(fixture);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.plan.actions.length).toBeGreaterThan(0);
+      expect(result.plan.actions.at(-1)?.type).toBe("done");
+    });
+  }
+
+  test("the two explanation-style scenarios act on nothing", () => {
+    for (const fixture of ["phase5-explain-app"] as const) {
+      const result = parse(fixture);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.plan.actions.map((action) => action.type)).toEqual(["done"]);
+    }
+  });
+
+  test("the open-a-site scenario navigates on loopback and stops there", () => {
+    const result = parse("phase5-open-site");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.actions.map((action) => action.type)).toEqual(["navigate", "done"]);
+    const [navigate] = result.plan.actions;
+    expect(navigate?.type === "navigate" ? navigate.url : "").toStartWith("http://127.0.0.1:8788/");
+  });
+
+  test("the form scenario names its private value and never carries it", () => {
+    const result = parse("phase5-form");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const typed = result.plan.actions.flatMap((action) =>
+      action.type === "type" ? [{ value: action.value, target: action.target.accessibleName }] : [],
+    );
+    expect(typed).toEqual([
+      { value: "Berlin", target: "City" },
+      { value: "[EMAIL_1]", target: "[EMAIL]" },
+    ]);
+    // Nothing in the plan looks like an address: the value is a name, not a value.
+    expect(JSON.stringify(result.plan)).not.toContain("@");
+  });
+
+  test("the filter scenario separates a selection from an apply", () => {
+    const result = parse("phase5-filter-sort");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.actions.map((action) => action.type)).toEqual(["select", "click", "done"]);
+  });
+
+  test("every demo fixture addresses its target semantically, never by coordinate alone", () => {
+    for (const fixture of fixtures) {
+      const result = parse(fixture);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      for (const action of result.plan.actions) {
+        if (action.type === "click" || action.type === "type" || action.type === "select") {
+          expect(action.target.role.length).toBeGreaterThan(0);
+          expect(action.target.accessibleName.length).toBeGreaterThan(0);
+          expect(action.target.box.width).toBeGreaterThan(0);
+          expect(action.target.box.height).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+});
+
 describe("parseActionPlan: rejected responses", () => {
   const cases: { fixture: keyof typeof MOCK_FIXTURES; because: string }[] = [
     { fixture: "prose-only", because: "the model answered in prose" },
