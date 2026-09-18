@@ -124,7 +124,7 @@ describe("requestPlan: what actually goes on the wire", () => {
     const { calls, fetchImpl } = recording(() => json(planResponse()));
     await requestPlan({ settings: settings(), observation: observation(), signal: live, fetchImpl });
     const provider = (JSON.parse(String(calls[0]!.init.body)) as { provider: Record<string, unknown> }).provider;
-    expect(provider).toEqual({ providerId: "mock" });
+    expect(provider).toEqual({ providerId: "lmstudio" });
 
     const withModel = recording(() => json(planResponse()));
     await requestPlan({

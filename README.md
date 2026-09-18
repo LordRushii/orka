@@ -37,7 +37,7 @@ bun run dev:gateway                              # http://127.0.0.1:8787, loopba
 bun run dev:extension                            # WXT dev build in .output/chrome-mv3
 ```
 
-Load `apps/extension/.output/chrome-mv3` as an unpacked extension, then open the side panel and pick a planner. With no configuration at all the gateway serves `mock` (deterministic, in-process) and `lmstudio` (your own loopback server). Cloud providers require both a key in `apps/gateway/.env` and an entry in `ORKA_ENABLED_PROVIDERS`, so a fresh checkout cannot make an outbound call by accident.
+Load `apps/extension/.output/chrome-mv3` as an unpacked extension, then open the side panel and pick a planner. With no configuration at all the gateway serves only `lmstudio` (your own loopback server) — point it at LM Studio's local server and load a model. Cloud providers require both a key in `apps/gateway/.env` and an entry in `ORKA_ENABLED_PROVIDERS`, so a fresh checkout cannot make an outbound call by accident. The deterministic `mock` provider still exists for tests and demos, but is never enabled by default; add `mock` to `ORKA_ENABLED_PROVIDERS` explicitly if you want it (see "Running the demo" below).
 
 Provider API keys live only in the gateway environment. The browser stores a gateway session token and nothing else.
 
@@ -49,8 +49,8 @@ bun run typecheck
 ## Running the demo
 
 ```bash
-bun run dev:gateway      # planner gateway
-bun run dev:fixtures     # synthetic demo site on http://127.0.0.1:8788 and :8789
+ORKA_ENABLED_PROVIDERS=mock bun run dev:gateway   # planner gateway, with mock explicitly enabled
+bun run dev:fixtures                              # synthetic demo site on http://127.0.0.1:8788 and :8789
 bun run --cwd apps/extension build
 ```
 
