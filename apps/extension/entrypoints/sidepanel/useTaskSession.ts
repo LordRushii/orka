@@ -32,6 +32,8 @@ import {
   emptyPrivateValueRow,
   type PrivateValueRow,
 } from "../../shared/privateValues.ts";
+import type { LocalMetrics } from "../../shared/metrics.ts";
+import type { OutboundView } from "../../shared/outboundView.ts";
 import { DEFAULT_PLANNER_SETTINGS, type PlannerSettings } from "../../shared/settings.ts";
 
 export type { PrivateValueRow } from "../../shared/privateValues.ts";
@@ -151,6 +153,13 @@ export function useTaskSession() {
    */
   const [declaredValueNames, setDeclaredValueNames] = useState<string[]>([]);
 
+  /**
+   * This run's aggregated timings, and the request body described by shape.
+   * Both are local to this session and cleared when it closes.
+   */
+  const [metrics, setMetrics] = useState<LocalMetrics>();
+  const [outbound, setOutbound] = useState<OutboundView>();
+
   useEffect(() => {
     const listener = (message: unknown) => {
       if (!message || typeof message !== "object" || !("type" in message)) return;
@@ -177,13 +186,18 @@ export function useTaskSession() {
         setState("awaiting_approval");
         setPlan(event.plan);
         setPlanMeta(event.meta);
+        setOutbound(event.outbound);
         setPlanError(undefined);
       } else if (isPlanFailure(event)) {
         setTaskId(event.taskId);
         setState("failed");
         setPlan(undefined);
         setPlanMeta(undefined);
+        setOutbound(event.outbound);
         setPlanError(event.error);
+      } else if (event.type === "METRICS_REPORT") {
+        setTaskId(event.taskId);
+        setMetrics(event.metrics);
       } else if (event.type === "EXECUTION_STARTED") {
         setTaskId(event.taskId);
         setState("executing");
@@ -233,6 +247,7 @@ export function useTaskSession() {
         setAudit(undefined);
         setObservation(undefined);
         setPending(undefined);
+        setOutbound(undefined);
         setPrivateValues([emptyPrivateValueRow()]);
         setDeclaredValueNames([]);
       } else if (isAuditClosed(event)) {
@@ -247,6 +262,10 @@ export function useTaskSession() {
         setOutcomes([]);
         setPending(undefined);
         setRun(undefined);
+        // The metrics and the outbound view describe a session that has closed:
+        // they go with it, rather than lingering as a record of a past task.
+        setMetrics(undefined);
+        setOutbound(undefined);
         setPrivateValues([emptyPrivateValueRow()]);
         setDeclaredValueNames([]);
       }
@@ -283,6 +302,8 @@ export function useTaskSession() {
       setOutcomes([]);
       setPending(undefined);
       setRun(undefined);
+      setMetrics(undefined);
+      setOutbound(undefined);
       const authority = await browser.runtime.sendMessage({ type: "GET_CAPTURE_AUTHORITY" });
       if (!authority?.ok || typeof authority.authorityId !== "string") {
         setRequestError(authority?.message ?? "Reopen Orka from the toolbar before starting a task.");
@@ -426,6 +447,8 @@ export function useTaskSession() {
       outcomes,
       pending,
       run,
+      metrics,
+      outbound,
       privateValues,
       setPrivateValues,
       declaredValueNames,
@@ -455,6 +478,8 @@ export function useTaskSession() {
       outcomes,
       pending,
       run,
+      metrics,
+      outbound,
       privateValues,
       declaredValueNames,
       canStop,

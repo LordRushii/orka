@@ -10,6 +10,11 @@ import {
   type ProviderDescriptor,
   type SanitizedObservation,
 } from "@orka/contracts";
+import {
+  NO_OUTBOUND_REQUEST,
+  describeOutboundRequest,
+  type OutboundView,
+} from "./outboundView.ts";
 import type { PlannerSettings } from "./settings.ts";
 
 /**
@@ -24,18 +29,30 @@ export type PlannerFailure = {
   ok: false;
   code: PlannerFailureCode;
   message: string;
+  /**
+   * What the request body looked like. Present on the failing path too: "what
+   * would have left the device" is exactly what a demo of a failed call needs,
+   * and it is derived from the same object the fetch would have sent.
+   */
+  outbound: OutboundView;
 };
 
 export type PlannerSuccess = {
   ok: true;
   plan: ActionPlan;
   meta: PlanMetadata;
+  /** The body that left this device, described by shape so it can be shown. */
+  outbound: OutboundView;
 };
 
 export type PlannerResult = PlannerSuccess | PlannerFailure;
 
-function failure(code: PlannerFailureCode, message: string): PlannerFailure {
-  return { ok: false, code, message };
+function failure(
+  code: PlannerFailureCode,
+  message: string,
+  outbound: OutboundView,
+): PlannerFailure {
+  return { ok: false, code, message, outbound };
 }
 
 /**
@@ -44,7 +61,7 @@ function failure(code: PlannerFailureCode, message: string): PlannerFailure {
  * unparseable body degrades to the status code rather than being shown raw --
  * an HTML error page must never reach the side panel as "the reason".
  */
-async function readErrorBody(response: Response): Promise<PlannerFailure> {
+async function readErrorBody(response: Response, outbound: OutboundView): Promise<PlannerFailure> {
   let body: unknown;
   try {
     body = await response.json();
@@ -52,6 +69,7 @@ async function readErrorBody(response: Response): Promise<PlannerFailure> {
     return failure(
       "PROVIDER_ERROR",
       `The gateway returned HTTP ${response.status}.`,
+      outbound,
     );
   }
   const parsed = SafeErrorSchema.safeParse(body);
@@ -59,9 +77,10 @@ async function readErrorBody(response: Response): Promise<PlannerFailure> {
     return failure(
       "PROVIDER_ERROR",
       `The gateway returned HTTP ${response.status}.`,
+      outbound,
     );
   }
-  return failure(parsed.data.error.code, parsed.data.error.message);
+  return failure(parsed.data.error.code, parsed.data.error.message, outbound);
 }
 
 export type PlannerRequestOptions = {
@@ -93,11 +112,16 @@ export async function requestPlan(
       : { providerId: settings.providerId },
     observation,
   };
+  // Described before validation, and from the object itself, so the panel can
+  // show what was attempted even when the request was refused locally and
+  // never left the browser at all.
+  const outbound = describeOutboundRequest(request);
   const validated = PlanRequestSchema.safeParse(request);
   if (!validated.success) {
     return failure(
       "INVALID_OBSERVATION",
       "The sanitized observation did not match the gateway contract.",
+      outbound,
     );
   }
 
@@ -119,21 +143,22 @@ export async function requestPlan(
     });
   } catch {
     if (signal.aborted) {
-      return failure("ABORTED", "The Task Session ended before the plan arrived.");
+      return failure("ABORTED", "The Task Session ended before the plan arrived.", outbound);
     }
     return failure(
       "GATEWAY_UNREACHABLE",
       `Could not reach the Orka gateway at ${settings.gatewayUrl}.`,
+      outbound,
     );
   }
 
-  if (!response.ok) return readErrorBody(response);
+  if (!response.ok) return readErrorBody(response, outbound);
 
   let body: unknown;
   try {
     body = await response.json();
   } catch {
-    return failure("PROVIDER_ERROR", "The gateway response was not valid JSON.");
+    return failure("PROVIDER_ERROR", "The gateway response was not valid JSON.", outbound);
   }
 
   const parsed = PlanResponseSchema.safeParse(body);
@@ -141,6 +166,7 @@ export async function requestPlan(
     return failure(
       "INVALID_ACTION_PLAN",
       "The gateway returned a plan that does not match the contract.",
+      outbound,
     );
   }
   // The gateway already checks this. Re-checking here means a confused or
@@ -150,10 +176,11 @@ export async function requestPlan(
     return failure(
       "INVALID_ACTION_PLAN",
       "The plan does not belong to this Task Session.",
+      outbound,
     );
   }
 
-  return { ok: true, plan: parsed.data.plan, meta: parsed.data.meta };
+  return { ok: true, plan: parsed.data.plan, meta: parsed.data.meta, outbound };
 }
 
 export type GatewayCheck =
@@ -189,7 +216,7 @@ export async function checkGateway(
   }
 
   if (!response.ok) {
-    const error = await readErrorBody(response);
+    const error = await readErrorBody(response, NO_OUTBOUND_REQUEST);
     return { ok: false, message: error.message };
   }
 

@@ -308,6 +308,25 @@
   border-radius: 6px;
 }
 
+/* Local metrics and the outbound-field list: dense, scannable rows with no
+   images, so a demo can read them from across a room. */
+.metrics__list {
+  margin: 0 0 8px;
+  padding-left: 0;
+  list-style: none;
+}
+
+.metrics__weights {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 3px;
+}
+
+.metrics__weights li {
+  line-height: 1.4;
+}
+
 .audit__summary {
   color: #d4d7dc;
   font-size: 0.82rem;

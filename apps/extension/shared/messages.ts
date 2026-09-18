@@ -14,6 +14,9 @@ import type {
   TaskState,
 } from "@orka/contracts";
 import type { ExecutionReport } from "./executor.ts";
+import type { CategoryBandCount, ModelVersion } from "./localReport.ts";
+import type { LocalMetrics } from "./metrics.ts";
+import type { OutboundView } from "./outboundView.ts";
 import type { PlannerFailureCode } from "./plannerClient.ts";
 import type { PlannerSettings } from "./settings.ts";
 
@@ -21,6 +24,7 @@ export const EXTENSION_MESSAGE_TYPES = {
   START_TASK: "START_TASK",
   APPROVE_PLAN: "APPROVE_PLAN",
   CONFIRMATION_DECISION: "CONFIRMATION_DECISION",
+  METRICS_REPORT: "METRICS_REPORT",
   GET_CAPTURE_AUTHORITY: "GET_CAPTURE_AUTHORITY",
   CAPTURE_REQUEST: "CAPTURE_REQUEST",
   SNAPSHOT_RESULT: "SNAPSHOT_RESULT",
@@ -115,6 +119,14 @@ export type LocalAuditView = {
   originalScreenshot: EncodedScreenshot;
   redactedScreenshot: EncodedScreenshot;
   redactionSummary: RedactionSummaryEntry[];
+  /**
+   * How sure the detections were, in bands rather than scores: enough for a
+   * reviewer to judge the redaction, without rebuilding the Redaction Map on
+   * screen (phases/05-demo-and-hardening.md).
+   */
+  confidenceBands: CategoryBandCount[];
+  /** The pinned model versions behind this scan, from the build's manifest. */
+  models: ModelVersion[];
   createdAt: number;
 };
 
@@ -137,12 +149,27 @@ export type PlanResultMessage = {
   taskId: string;
   plan: ActionPlan;
   meta: PlanMetadata;
+  /** The request body, described by shape: what left this device. */
+  outbound: OutboundView;
 };
 
 export type PlanFailureMessage = {
   type: "PLAN_FAILURE";
   taskId: string;
   error: { code: PlannerFailureCode; message: string };
+  /** Present on the failing path too: the request that was attempted. */
+  outbound: OutboundView;
+};
+
+/**
+ * Aggregated local metrics for one Task Session (phases/05-demo-and-hardening.md).
+ * Plain numbers about this extension and this run: no page text, no URL, no
+ * detection location, no private value, and nothing persisted anywhere.
+ */
+export type MetricsReportMessage = {
+  type: "METRICS_REPORT";
+  taskId: string;
+  metrics: LocalMetrics;
 };
 
 export type GetPlannerSettingsMessage = {
@@ -205,6 +232,7 @@ export type ExtensionMessage =
   | TaskStateMessage
   | TaskStoppedMessage
   | AuditClosedMessage
+  | MetricsReportMessage
   /** Progress the executor publishes while it runs an approved plan. */
   | ExecutionReport;
 

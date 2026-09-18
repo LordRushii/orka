@@ -62,6 +62,8 @@ import {
   type PlannerFailure,
   type PlannerResult,
 } from "../shared/plannerClient.ts";
+import { NO_OUTBOUND_REQUEST } from "../shared/outboundView.ts";
+import { safeErrorName } from "../shared/logging.ts";
 import {
   GatewayUrlError,
   loadPlannerSettings,
@@ -71,6 +73,13 @@ import {
 import { createPixelWorkers, type PixelWorkers } from "../shared/pixelWorkers.ts";
 import { createEngine, TASK_SESSION_TIMEOUT_MS } from "../shared/engine.ts";
 import { releaseTaskResources } from "../shared/taskCleanup.ts";
+import { describeModelVersions, summarizeConfidenceBands } from "../shared/localReport.ts";
+import {
+  createMetricsRecorder,
+  sampleExtensionMemory,
+  type MetricsRecorder,
+  type TaskOutcome,
+} from "../shared/metrics.ts";
 
 /** Upper bound on a manual "Check gateway" probe, so the button always settles. */
 const GATEWAY_CHECK_TIMEOUT_MS = 5_000;
@@ -115,6 +124,8 @@ type ActiveTask = {
   executor?: ActionExecutor;
   executorAbort?: AbortController;
   pendingDecision?: PendingDecision;
+  /** Local timings for this session; aggregated numbers only (see metrics.ts). */
+  metrics: MetricsRecorder;
   modelManager: ReturnType<typeof createPixelModelManager>;
   pixelWorkers: PixelWorkers;
 };
@@ -167,7 +178,9 @@ function currentTask(task: ActiveTask): ActiveTask {
 
 function sendEvent(message: ExtensionMessage): void {
   browser.runtime.sendMessage(message).catch((error: unknown) => {
-    console.error("Failed to publish extension event", error);
+    // The failure's name only: the event itself is what could carry page data
+    // or a private value, and this line can end up in a screen recording.
+    console.error("Failed to publish extension event:", safeErrorName(error));
   });
 }
 
@@ -179,6 +192,23 @@ function publishState(task: ActiveTask): void {
     runtime: task.profile,
   };
   sendEvent(message);
+}
+
+/**
+ * Publishes this session's aggregated timings. Called at each point the run
+ * reaches a state worth reporting, so the panel's numbers are the numbers this
+ * run actually produced -- never a projection or a placeholder.
+ *
+ * The resource sample is taken here rather than at start, because the figure
+ * worth showing is what the extension was holding once it had done the work.
+ */
+function publishMetrics(task: ActiveTask, outcome: TaskOutcome): void {
+  task.metrics.setResourceSample(sampleExtensionMemory());
+  sendEvent({
+    type: "METRICS_REPORT",
+    taskId: task.taskId,
+    metrics: task.metrics.report(outcome),
+  });
 }
 
 /** Drops the raw capture, audit, timer, and model/worker state in one step. */
@@ -391,6 +421,7 @@ async function failExecution(task: ActiveTask, message: string): Promise<void> {
   if (activeTask !== task) return;
   clearExecutionState(task);
   releaseTask(task);
+  publishMetrics(task, "failed");
   if (task.session.can("EXECUTION_FAILED")) task.session.send("EXECUTION_FAILED");
   else task.session.stop();
   sendEvent({
@@ -423,6 +454,8 @@ async function runExecution(task: ActiveTask): Promise<void> {
   // A Stop, a timeout, or a replacement task already published its own ending,
   // and must not be re-published over by this run finishing.
   if (activeTask !== task || task.cancelled) return;
+
+  publishMetrics(task, run.status);
 
   if (run.status === "stopped") {
     task.cancelled = true;
@@ -466,7 +499,14 @@ function approvePlan(message: ApprovePlanMessage): ExtensionResponse {
     browser: executorBrowser(),
     page: createPagePort(browserInjectionApi()),
     requestApproval: approvalPort(task),
-    report: (event) => sendEvent(event),
+    report: (event) => {
+      // How long each step took, into the same local aggregate as the rest of
+      // the session's timings. Numbers only: an outcome carries no value.
+      if (event.type === "ACTION_OUTCOME" && event.durationMs !== undefined) {
+        task.metrics.record("action", event.durationMs);
+      }
+      sendEvent(event);
+    },
   });
   void runExecution(task).catch((error: unknown) => {
     void failExecution(task, safeErrorMessage(error, "The approved plan could not be run."));
@@ -520,14 +560,14 @@ async function openSidePanelForAction(tab: { id?: number; windowId?: number; url
   try {
     captureAuthorityStore.mint(tab, crypto.randomUUID());
   } catch (error) {
-    console.warn("Orka toolbar action is not capturable", error);
+    console.warn("Orka toolbar action is not capturable:", safeErrorName(error));
   }
   if (!tab.id) return;
   try {
     await browser.sidePanel.open({ tabId: tab.id });
   } catch (error) {
     captureAuthorityStore.clear();
-    console.error("Failed to open Orka side panel", error);
+    console.error("Failed to open Orka side panel:", safeErrorName(error));
   }
 }
 
@@ -549,6 +589,8 @@ function auditView(
 ): LocalAuditView {
   return {
     runtime: task.profile,
+    confidenceBands: summarizeConfidenceBands(task.audit?.detections ?? []),
+    models: describeModelVersions(),
     originalScreenshot,
     redactedScreenshot: {
       mimeType: observation.screenshot.mimeType,
@@ -564,6 +606,9 @@ function auditView(
 async function failTask(task: ActiveTask, code: SanitizationFailureCode, message: string) {
   if (activeTask !== task || task.cancelled) return;
   releaseTask(task);
+  // A fail-closed scan still has timings worth showing: "it gave up after 2.1
+  // seconds" is information, and `measure` recorded it on the failing path.
+  publishMetrics(task, "failed");
   if (task.session.can("SANITIZATION_FAILED")) task.session.send("SANITIZATION_FAILED");
   sendEvent({
     type: "SANITIZATION_FAILURE",
@@ -587,7 +632,9 @@ function failPlan(task: ActiveTask, error: PlannerFailure): void {
     type: "PLAN_FAILURE",
     taskId: task.taskId,
     error: { code: error.code, message: error.message },
+    outbound: error.outbound,
   });
+  publishMetrics(task, "failed");
   publishState(task);
 }
 
@@ -612,12 +659,17 @@ async function planTask(task: ActiveTask, observation: SanitizedObservation): Pr
   task.plannerAbort = controller;
   let result: PlannerResult;
   try {
-    result = await requestPlan({ settings, observation, signal: controller.signal });
+    result = await task.metrics.measure("gateway", () =>
+      requestPlan({ settings, observation, signal: controller.signal }),
+    );
   } catch (error) {
     result = {
       ok: false,
       code: "INTERNAL_ERROR",
       message: safeErrorMessage(error, "The planner request failed."),
+      // An unexpected throw before the body existed: nothing was described
+      // because nothing was built.
+      outbound: NO_OUTBOUND_REQUEST,
     };
   } finally {
     if (task.plannerAbort === controller) task.plannerAbort = undefined;
@@ -638,51 +690,65 @@ async function planTask(task: ActiveTask, observation: SanitizedObservation): Pr
   // what every target in it is checked against before anything happens.
   task.plan = result.plan;
   task.observation = observation;
+  // The provider's own view of how long the model took, as distinct from the
+  // extension's round-trip measurement above: the demo shows both, because a
+  // slow gateway and a slow model are different problems.
+  task.metrics.record("plan", result.meta.latencyMs);
   task.session.send("PLAN_READY");
   sendEvent({
     type: "PLAN_RESULT",
     taskId: task.taskId,
     plan: result.plan,
     meta: result.meta,
+    outbound: result.outbound,
   });
+  publishMetrics(task, "planned");
   publishState(task);
 }
 
-async function scanTask(task: ActiveTask): Promise<void> {  try {
+async function scanTask(task: ActiveTask): Promise<void> {
+  try {
     const models = await task.modelManager.initialize(task.profile);
     await task.pixelWorkers.initialize(models, task.profile);
     currentTask(task);
-    let capture;
-    try {
-      capture = await captureFromAuthority(task.authority, captureBrowser());
-    } catch (error) {
-      if (error instanceof CaptureAuthorityError) {
-        throw new CaptureFlowError("CAPTURE_FAILED", error.message);
+
+    // Capture is one phase of the demo's timeline: everything from the
+    // active-tab screenshot to the decoded local bitmap, including the
+    // revalidation that has to pass before the page is read at all.
+    const { snapshot, captureTab, screenshot } = await task.metrics.measure("capture", async () => {
+      let capture;
+      try {
+        capture = await captureFromAuthority(task.authority, captureBrowser());
+      } catch (error) {
+        if (error instanceof CaptureAuthorityError) {
+          throw new CaptureFlowError("CAPTURE_FAILED", error.message);
+        }
+        throw error;
       }
-      throw error;
-    }
-    task.screenshotDataUrl = capture.screenshotDataUrl;
-    const snapshot = await requestSnapshot(task.authority.tabId, task.taskId);
-    let captureTab;
-    try {
-      captureTab = await validateCaptureAuthority(task.authority, captureBrowser());
-    } catch (error) {
-      if (error instanceof CaptureAuthorityError) {
-        throw new CaptureFlowError("CAPTURE_FAILED", error.message);
+      task.screenshotDataUrl = capture.screenshotDataUrl;
+      const pageSnapshot = await requestSnapshot(task.authority.tabId, task.taskId);
+      let tab;
+      try {
+        tab = await validateCaptureAuthority(task.authority, captureBrowser());
+      } catch (error) {
+        if (error instanceof CaptureAuthorityError) {
+          throw new CaptureFlowError("CAPTURE_FAILED", error.message);
+        }
+        throw error;
       }
-      throw error;
-    }
-    let screenshot;
-    try {
-      screenshot = await decodeCapturedScreenshot(task.screenshotDataUrl);
-    } catch (error) {
-      throw new CaptureFlowError(
-        "CAPTURE_FAILED",
-        safeErrorMessage(error, "The captured screenshot could not be decoded locally."),
-      );
-    }
-    task.screenshotDataUrl = "";
-    currentTask(task);
+      let decoded;
+      try {
+        decoded = await decodeCapturedScreenshot(task.screenshotDataUrl);
+      } catch (error) {
+        throw new CaptureFlowError(
+          "CAPTURE_FAILED",
+          safeErrorMessage(error, "The captured screenshot could not be decoded locally."),
+        );
+      }
+      task.screenshotDataUrl = "";
+      currentTask(task);
+      return { snapshot: pageSnapshot, captureTab: tab, screenshot: decoded };
+    });
 
     const input: CaptureInput = {
       taskId: task.taskId,
@@ -697,13 +763,18 @@ async function scanTask(task: ActiveTask): Promise<void> {  try {
       screenshot,
       snapshot: scaleSnapshot(snapshot.snapshot, snapshot.viewport, screenshot),
     };
-    const result = await createEngine(task.pixelWorkers).sanitize(input, task.profile);
+    const result = await task.metrics.measure("sanitize", () =>
+      createEngine(task.pixelWorkers).sanitize(input, task.profile),
+    );
     currentTask(task);
 
     if (!result.ok) {
       await failTask(task, result.error.code, result.error.message);
       return;
     }
+    // The only category information the demo shows: the same coarse counts the
+    // observation carries, never the map they came from.
+    task.metrics.setCategoryCounts(result.observation.redactionSummary);
 
     const encoder = createBrowserImageEncoder();
     const originalScreenshot = await encodeForLocalAudit(encoder, result.localAudit.originalScreenshot);
@@ -787,15 +858,18 @@ async function startTask(message: StartTaskMessage): Promise<ExtensionResponse> 
     origin: authority.origin,
     cancelled: false,
     sensitiveValues: { ...privateValues.data },
+    metrics: createMetricsRecorder(),
     modelManager: createPixelModelManager(),
     pixelWorkers: createPixelWorkers(),
   };
+  task.metrics.setRuntime(profile.mode);
   activeTask = task;
   task.session.send("START_SCAN");
   task.timeoutHandle = setTimeout(() => {
     if (activeTask !== task || task.cancelled || !task.session.enforceTimeout()) return;
     task.cancelled = true;
     releaseTask(task);
+    publishMetrics(task, "stopped");
     sendEvent({ type: "TASK_STOPPED", taskId: task.taskId });
     publishState(task);
     activeTask = null;
@@ -814,6 +888,7 @@ function stopTask(taskId?: string): ExtensionResponse {
   releaseTask(task);
   const stopped = task.session.stop();
   if (!stopped) return { ok: false, type: "ERROR", message: "Task Session is not active." };
+  publishMetrics(task, "stopped");
   sendEvent({ type: "TASK_STOPPED", taskId: task.taskId });
   publishState(task);
   activeTask = null;
