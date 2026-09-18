@@ -65,6 +65,55 @@ describe("parseActionPlan: accepted responses", () => {
   });
 });
 
+describe("parseActionPlan: the Phase 4 browser-check fixtures stay runnable", () => {
+  /**
+   * `docs/PHASE-4-BROWSER-CHECK.md` drives these through the real extension, so
+   * a fixture that stops parsing would break the manual pass silently. Only the
+   * deliberately-refused ones are exercised for real in that document; all of
+   * them have to be valid plans for the gateway to hand one over.
+   */
+  const fixtures = [
+    "phase4-form",
+    "phase4-duplicate",
+    "phase4-ambiguous",
+    "phase4-moved",
+    "phase4-refused",
+    "phase4-captcha",
+    "phase4-password",
+    "phase4-cross-origin",
+  ] as const;
+
+  for (const fixture of fixtures) {
+    test(`"${fixture}" is a contract-valid plan`, () => {
+      const result = parse(fixture);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.plan.actions.length).toBeGreaterThan(0);
+      expect(result.plan.actions.at(-1)?.type).toBe("done");
+    });
+  }
+
+  test("the local-value fixture names a value rather than carrying one", () => {
+    const result = parse("phase4-form");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const values = result.plan.actions.flatMap((action) =>
+      action.type === "type" || action.type === "select" ? [action.value] : [],
+    );
+    expect(values).toContain("[PHONE_1]");
+  });
+
+  test("the cross-origin fixture stays on loopback", () => {
+    const result = parse("phase4-cross-origin");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const urls = result.plan.actions.flatMap((action) =>
+      action.type === "navigate" ? [action.url] : [],
+    );
+    expect(urls).toEqual(["http://127.0.0.1:8789/phase4-page.html"]);
+  });
+});
+
 describe("parseActionPlan: rejected responses", () => {
   const cases: { fixture: keyof typeof MOCK_FIXTURES; because: string }[] = [
     { fixture: "prose-only", because: "the model answered in prose" },

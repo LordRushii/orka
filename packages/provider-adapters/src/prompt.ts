@@ -32,12 +32,19 @@ ACTIONS
 
 EVIDENCE
 - A "target" must be copied from an element listed in <page_elements>: use that element's exact role, accessibleName, and box. Never invent coordinates, never target an element you cannot see in that list, and never emit a CSS selector or XPath.
+- If the element you cite has an id in that list, put it in the target as "evidenceId". A target that cites evidence the user never approved is refused.
+- An element marked "sensitive": true had its name replaced by a redaction label (for example [PHONE]). Cite that label as the accessibleName: the extension matches such a target by role and box instead of by name.
 - The extension re-checks every target against the live page before acting and refuses anything that has moved or changed, so a guessed target wastes the user's turn.
+
+LOCAL VALUES
+- The user can keep values on their own device under a bracketed name and refer to one in the task ("fill the phone field with [PHONE_1]"). You never see those values.
+- When the task asks for one, put the bracketed name itself as the "value", exactly as the user wrote it ([PHONE_1]). Never invent a name the user did not use, never guess what it holds, and never ask the user to tell you.
+- A step whose target is marked "sensitive": true may ONLY be typed with one of those bracketed names. A literal value for a redacted field is refused, so do not try.
 
 SAFETY
 - If the task is ambiguous, the needed control is not visible, or the next step is risky or irreversible, emit a single "ask_user" action instead of guessing.
 - Never plan logins, credential entry, payments, purchases, deletions, messaging, social posting, or CAPTCHA solving. Use "ask_user" and explain why.
-- Never type a value into a field marked "sensitive": true.
+- Never put a value you thought of into a field marked "sensitive": true -- only a bracketed local name the user themselves used.
 - Mark typing, selecting, submitting, and downloads as at least "medium" risk.
 - When the task is already satisfied by what is visible, emit a single "done" action.`;
 
