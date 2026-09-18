@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ContractVersionSchema } from "./errors";
+import { ExecutionOutcomeCodeSchema } from "./executor";
 import { BoxSchema } from "./observation";
 
 export const RiskSchema = z.enum(["low", "medium", "high"]);
@@ -9,11 +10,26 @@ export type Risk = z.infer<typeof RiskSchema>;
  * Semantic evidence tying a proposed action to a specific live element. The
  * executor rechecks role/accessibleName/box against the live DOM immediately
  * before acting and refuses to act if they no longer match.
+ *
+ * `evidenceId` names the element in the observation the plan was built from
+ * (`e-12`), which lets the executor prove the plan is citing evidence the user
+ * actually approved rather than a coordinate it invented. It is not a live
+ * handle: the executor still resolves the target against the DOM on its own.
+ *
+ * Visible/enabled/interactable state is deliberately *not* part of the citation,
+ * even though phases/04-safe-execution.md asks every target to carry it. It is
+ * carried -- read from the live DOM one step before the action is taken (see
+ * `resolveTarget` and `candidateCapabilities` in the extension). A plan's own
+ * claim about an element's state is not evidence: such a flag would still have
+ * to be checked against the element, and a hidden element never enters the
+ * observation in the first place, so the field could only ever be redundant or
+ * wrong.
  */
 export const TargetEvidenceSchema = z
   .object({
     role: z.string().min(1).max(64),
     accessibleName: z.string().max(256),
+    evidenceId: z.string().min(1).max(64).optional(),
     box: BoxSchema,
   })
   .strict();
@@ -138,12 +154,18 @@ export const ActionPlanSchema = z
   .strict();
 export type ActionPlan = z.infer<typeof ActionPlanSchema>;
 
-/** Result of executing exactly one action from an approved ActionPlan. */
+/**
+ * Result of executing exactly one action from an approved ActionPlan. `reason`
+ * is short, human-safe prose; `code` is the stable machine-readable reason.
+ * Neither ever carries a resolved Sensitive Value -- a typed local variable is
+ * reported by name (`[PHONE_1]`), never by content.
+ */
 export const ActionOutcomeSchema = z
   .object({
     taskId: z.string().min(1).max(64),
     actionIndex: z.number().int().min(0),
     status: z.enum(["success", "failure", "skipped"]),
+    code: ExecutionOutcomeCodeSchema.optional(),
     reason: z.string().max(400).optional(),
   })
   .strict();
