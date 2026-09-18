@@ -116,6 +116,44 @@ describe("releaseTaskResources", () => {
     expect(active.audit).toBeUndefined();
   });
 
+  test("empties the private values in place, so no resolved value outlives the session", () => {
+    const values: Record<string, string> = { PHONE_1: "555 0100", EMAIL: "jane@example.com" };
+    // The background hands this very object to the executor, so a reference
+    // held elsewhere has to see it emptied too -- not replaced.
+    const active = task({ sensitiveValues: values });
+    releaseTaskResources(active);
+    expect(Object.keys(values)).toHaveLength(0);
+    expect(JSON.stringify(active.sensitiveValues)).not.toContain("555");
+  });
+
+  test("drops the approved plan and the observation it was checked against", () => {
+    const active = task({ plan: { actions: [{ type: "click" }] }, observation: { taskId: "t" } });
+    releaseTaskResources(active);
+    expect(active.plan).toBeUndefined();
+    expect(active.observation).toBeUndefined();
+  });
+
+  test("aborts an in-flight execution so a stopped session cannot keep acting", () => {
+    let aborted = false;
+    const active = task({ executorAbort: { abort: () => { aborted = true; } } });
+    releaseTaskResources(active);
+    expect(aborted).toBe(true);
+    expect(active.executorAbort).toBeUndefined();
+  });
+
+  test("still releases everything when the execution abort throws", () => {
+    const active = task({
+      executorAbort: {
+        abort: () => {
+          throw new Error("already aborted");
+        },
+      },
+    });
+    expect(() => releaseTaskResources(active)).not.toThrow();
+    expect(active.plannerAbort).toBeUndefined();
+    expect(active.executorAbort).toBeUndefined();
+  });
+
   test("is idempotent, so the catch -> failTask double-release path is safe", () => {
     const active = task({ timeoutHandle: setTimeout(() => {}, 1000) });
     releaseTaskResources(active);
@@ -161,6 +199,26 @@ describe("terminal task paths", () => {
       expect(active.timeoutHandle).toBeUndefined();
       expect(active.modelManager.calls).toBe(1);
       expect(active.pixelWorkers.calls).toBe(1);
+    });
+
+    test(`${path} also leaves no private value, plan, or running executor`, () => {
+      const values: Record<string, string> = { PHONE_1: "555 0100" };
+      let aborted = false;
+      const active = task({
+        sensitiveValues: values,
+        plan: { actions: [] },
+        observation: { taskId: "t" },
+        executorAbort: {
+          abort: () => {
+            aborted = true;
+          },
+        },
+      });
+      releaseTaskResources(active);
+      expect(Object.keys(values)).toHaveLength(0);
+      expect(active.plan).toBeUndefined();
+      expect(active.observation).toBeUndefined();
+      expect(aborted).toBe(true);
     });
   }
 });

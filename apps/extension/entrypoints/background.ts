@@ -9,7 +9,14 @@ import {
   createPixelModelManager,
   ModelLoadFailedError,
 } from "@orka/privacy-engine";
-import { TaskSession, type SanitizationFailureCode, type SanitizedObservation } from "@orka/contracts";
+import {
+  SensitiveVariablesSchema,
+  TaskSession,
+  type ActionPlan,
+  type SanitizationFailureCode,
+  type SanitizedObservation,
+  type SensitiveVariables,
+} from "@orka/contracts";
 import {
   CaptureAuthorityError,
   captureFromAuthority,
@@ -25,6 +32,8 @@ import {
   encodeForLocalAudit,
 } from "../shared/image.ts";
 import type {
+  ApprovePlanMessage,
+  ConfirmationDecisionMessage,
   ExtensionMessage,
   ExtensionResponse,
   GatewayCheckResponse,
@@ -35,6 +44,17 @@ import type {
   StartTaskMessage,
   TaskStateMessage,
 } from "../shared/messages.ts";
+import {
+  MAX_EXECUTION_ACTIONS,
+  TAB_LOAD_TIMEOUT_MS,
+  TAB_SETTLE_POLL_MS,
+  createActionExecutor,
+  type ActionExecutor,
+  type ApprovalDecision,
+  type ApprovalRequest,
+  type ExecutorBrowser,
+} from "../shared/executor.ts";
+import { browserInjectionApi, createPagePort } from "../shared/pagePort.ts";
 import { isExtensionMessage } from "../shared/messages.ts";
 import {
   checkGateway,
@@ -67,6 +87,13 @@ class CaptureFlowError extends Error {
   }
 }
 
+/** A step the executor is waiting on the user to answer. */
+type PendingDecision = {
+  actionIndex: number;
+  kind: "confirm" | "ask_user";
+  resolve(decision: ApprovalDecision): void;
+};
+
 type ActiveTask = {
   taskId: string;
   task: string;
@@ -74,10 +101,20 @@ type ActiveTask = {
   profile: RuntimeProfile;
   screenshotDataUrl: string;
   authority: CaptureAuthority;
+  /** Origin the task started on; execution pauses if the page leaves it. */
+  origin: string;
   cancelled: boolean;
   timeoutHandle?: ReturnType<typeof setTimeout>;
   audit?: LocalAudit;
   plannerAbort?: AbortController;
+  /** The approved plan and the observation every target is checked against. */
+  plan?: ActionPlan;
+  observation?: SanitizedObservation;
+  /** Private values for this task; memory only, cleared when the run ends. */
+  sensitiveValues: SensitiveVariables;
+  executor?: ActionExecutor;
+  executorAbort?: AbortController;
+  pendingDecision?: PendingDecision;
   modelManager: ReturnType<typeof createPixelModelManager>;
   pixelWorkers: PixelWorkers;
 };
@@ -245,6 +282,214 @@ async function requestSnapshot(
   }
 }
 
+/* -------------------------------------------------------------------------- *
+ * Safe action execution (Phase 4)                                            *
+ * -------------------------------------------------------------------------- */
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Waits for a tab to finish loading, or gives up without throwing. */
+function waitForTabComplete(tabId: number, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      browser.tabs.onUpdated.removeListener(listener);
+      resolve();
+    };
+    const listener = (updatedTabId: number, info: { status?: string }) => {
+      if (updatedTabId === tabId && info.status === "complete") finish();
+    };
+    const timer = setTimeout(finish, TAB_LOAD_TIMEOUT_MS);
+    browser.tabs.onUpdated.addListener(listener);
+  });
+}
+
+/**
+ * The tab half of the executor's world. `settle` is what lets a click that
+ * navigates be noticed before the next step is resolved against the page: it
+ * waits for the URL to move, then for the new document to finish loading.
+ */
+function executorBrowser(): ExecutorBrowser {
+  return {
+    getTab: (tabId) => browser.tabs.get(tabId),
+    getActiveTab: async (windowId) => (await browser.tabs.query({ active: true, windowId }))[0],
+    updateTab: async (tabId, url) => {
+      await browser.tabs.update(tabId, { url });
+    },
+    settle: async (tabId, beforeUrl, timeoutMs) => {
+      const deadline = Date.now() + timeoutMs;
+      let changed = false;
+      while (Date.now() < deadline) {
+        const tab = await browser.tabs.get(tabId).catch(() => undefined);
+        if (tab?.url !== undefined && tab.url !== beforeUrl) {
+          changed = true;
+          break;
+        }
+        await delay(TAB_SETTLE_POLL_MS);
+      }
+      if (!changed) {
+        return { url: (await browser.tabs.get(tabId).catch(() => undefined))?.url, changed: false };
+      }
+      await waitForTabComplete(tabId, TAB_LOAD_TIMEOUT_MS);
+      return { url: (await browser.tabs.get(tabId).catch(() => undefined))?.url, changed: true };
+    },
+  };
+}
+
+/**
+ * The user's half of the executor's world: one pending prompt at a time.
+ *
+ * A prompt is settled by the panel's decision, by an abort (Stop, timeout, a
+ * closed tab), or by the task being replaced -- and settling it as "declined"
+ * is the only safe default when the answer never arrives.
+ */
+function approvalPort(task: ActiveTask) {
+  return (request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalDecision> => {
+    if (activeTask !== task || task.cancelled || signal.aborted) {
+      return Promise.resolve({ approved: false });
+    }
+    return new Promise<ApprovalDecision>((resolve) => {
+      let entry: PendingDecision | undefined;
+      let settled = false;
+      const finish = (decision: ApprovalDecision): void => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        if (entry && task.pendingDecision === entry) task.pendingDecision = undefined;
+        resolve(decision);
+      };
+      const onAbort = () => finish({ approved: false });
+      signal.addEventListener("abort", onAbort, { once: true });
+      entry = { actionIndex: request.actionIndex, kind: request.kind, resolve: finish };
+      task.pendingDecision = entry;
+      // An abort that raced this registration still settles it.
+      if (signal.aborted) finish({ approved: false });
+    });
+  };
+}
+
+/**
+ * Drops the execution half of a task as soon as the run ends, so a private
+ * value or the approved plan outlives neither the run nor the session --
+ * including on the paths where the panel is still showing the log.
+ */
+function clearExecutionState(task: ActiveTask): void {
+  task.plan = undefined;
+  task.observation = undefined;
+  task.executor = undefined;
+  task.executorAbort = undefined;
+  task.pendingDecision = undefined;
+  for (const key of Object.keys(task.sensitiveValues)) delete task.sensitiveValues[key];
+}
+
+async function failExecution(task: ActiveTask, message: string): Promise<void> {
+  if (activeTask !== task) return;
+  clearExecutionState(task);
+  releaseTask(task);
+  if (task.session.can("EXECUTION_FAILED")) task.session.send("EXECUTION_FAILED");
+  else task.session.stop();
+  sendEvent({
+    type: "EXECUTION_FINISHED",
+    taskId: task.taskId,
+    status: "failed",
+    failure: { code: "UNEXPECTED_ERROR", message },
+    summary: message,
+  });
+  publishState(task);
+}
+
+/** Runs the approved plan, then lands the Task Session in its terminal state. */
+async function runExecution(task: ActiveTask): Promise<void> {
+  const { plan, observation, executor, executorAbort } = task;
+  if (!plan || !observation || !executor || !executorAbort) return;
+
+  const run = await executor.execute(plan, {
+    taskId: task.taskId,
+    observation,
+    tabId: task.authority.tabId,
+    windowId: task.authority.windowId,
+    origin: task.origin,
+    session: task.session,
+    sensitiveValues: task.sensitiveValues,
+    signal: executorAbort.signal,
+  });
+
+  clearExecutionState(task);
+  // A Stop, a timeout, or a replacement task already published its own ending,
+  // and must not be re-published over by this run finishing.
+  if (activeTask !== task || task.cancelled) return;
+
+  if (run.status === "stopped") {
+    task.cancelled = true;
+    releaseTask(task);
+    task.session.stop();
+    sendEvent({ type: "TASK_STOPPED", taskId: task.taskId });
+    publishState(task);
+    activeTask = null;
+    return;
+  }
+
+  // The plan ran to its end, or it failed: either way the user keeps the log,
+  // and the session stays dismissable.
+  releaseTask(task);
+  if (run.status === "completed" && task.session.can("COMPLETE")) task.session.send("COMPLETE");
+  if (run.status === "failed" && task.session.can("EXECUTION_FAILED")) {
+    task.session.send("EXECUTION_FAILED");
+  }
+  publishState(task);
+}
+
+function approvePlan(message: ApprovePlanMessage): ExtensionResponse {
+  if (!activeTask || activeTask.taskId !== message.taskId) {
+    return { ok: false, type: "ERROR", message: "No matching Task Session is active." };
+  }
+  const task = activeTask;
+  if (!task.session.can("APPROVE") || !task.plan || !task.observation) {
+    return { ok: false, type: "ERROR", message: "There is no plan waiting for approval." };
+  }
+  // The contract caps a plan too. Re-checking here means a plan cannot reach the
+  // executor by any other route with more steps than the policy allows.
+  if (task.plan.actions.length > MAX_EXECUTION_ACTIONS) {
+    return { ok: false, type: "ERROR", message: "That plan has more steps than Orka will run." };
+  }
+
+  task.session.send("APPROVE");
+  publishState(task);
+  const controller = new AbortController();
+  task.executorAbort = controller;
+  task.executor = createActionExecutor({
+    browser: executorBrowser(),
+    page: createPagePort(browserInjectionApi()),
+    requestApproval: approvalPort(task),
+    report: (event) => sendEvent(event),
+  });
+  void runExecution(task).catch((error: unknown) => {
+    void failExecution(task, safeErrorMessage(error, "The approved plan could not be run."));
+  });
+  return { ok: true, type: "ACK", taskId: task.taskId };
+}
+
+function decideConfirmation(message: ConfirmationDecisionMessage): ExtensionResponse {
+  if (!activeTask || activeTask.taskId !== message.taskId) {
+    return { ok: false, type: "ERROR", message: "No matching Task Session is active." };
+  }
+  const pending = activeTask.pendingDecision;
+  if (!pending || pending.actionIndex !== message.actionIndex) {
+    return { ok: false, type: "ERROR", message: "That step is no longer waiting for you." };
+  }
+  activeTask.pendingDecision = undefined;
+  pending.resolve({
+    approved: message.approved === true,
+    answer: typeof message.answer === "string" ? message.answer.slice(0, 500) : undefined,
+  });
+  return { ok: true, type: "ACK", taskId: activeTask.taskId };
+}
+
 function captureBrowser(): CaptureAuthorityBrowser {
   return {
     getTab: (tabId) => browser.tabs.get(tabId),
@@ -389,6 +634,10 @@ async function planTask(task: ActiveTask, observation: SanitizedObservation): Pr
     return;
   }
 
+  // Kept for the execution leg: the plan is what runs, and the observation is
+  // what every target in it is checked against before anything happens.
+  task.plan = result.plan;
+  task.observation = observation;
   task.session.send("PLAN_READY");
   sendEvent({
     type: "PLAN_RESULT",
@@ -508,6 +757,14 @@ async function startTask(message: StartTaskMessage): Promise<ExtensionResponse> 
   if (!message.task.trim()) {
     return { ok: false, type: "ERROR", message: "Enter a task before starting." };
   }
+  const privateValues = SensitiveVariablesSchema.safeParse(message.sensitiveValues ?? {});
+  if (!privateValues.success) {
+    return {
+      ok: false,
+      type: "ERROR",
+      message: "Those private values are not valid. Use names like PHONE_1.",
+    };
+  }
   if (activeTask && activeTask.session.isActive) {
     return { ok: false, type: "ERROR", message: "A Task Session is already active." };
   }
@@ -527,7 +784,9 @@ async function startTask(message: StartTaskMessage): Promise<ExtensionResponse> 
     profile,
     screenshotDataUrl: "",
     authority,
+    origin: authority.origin,
     cancelled: false,
+    sensitiveValues: { ...privateValues.data },
     modelManager: createPixelModelManager(),
     pixelWorkers: createPixelWorkers(),
   };
@@ -628,6 +887,14 @@ export default defineBackground(() => {
         sendResponse({ ok: false, type: "ERROR", message: safeErrorMessage(error, "Task Session could not start.") });
       });
       return true;
+    }
+    if (message.type === "APPROVE_PLAN") {
+      sendResponse(approvePlan(message));
+      return undefined;
+    }
+    if (message.type === "CONFIRMATION_DECISION") {
+      sendResponse(decideConfirmation(message));
+      return undefined;
     }
     if (message.type === "STOP_TASK") {
       sendResponse(stopTask(message.taskId));

@@ -13,11 +13,14 @@ import type {
   SanitizedObservation,
   TaskState,
 } from "@orka/contracts";
+import type { ExecutionReport } from "./executor.ts";
 import type { PlannerFailureCode } from "./plannerClient.ts";
 import type { PlannerSettings } from "./settings.ts";
 
 export const EXTENSION_MESSAGE_TYPES = {
   START_TASK: "START_TASK",
+  APPROVE_PLAN: "APPROVE_PLAN",
+  CONFIRMATION_DECISION: "CONFIRMATION_DECISION",
   GET_CAPTURE_AUTHORITY: "GET_CAPTURE_AUTHORITY",
   CAPTURE_REQUEST: "CAPTURE_REQUEST",
   SNAPSHOT_RESULT: "SNAPSHOT_RESULT",
@@ -42,6 +45,31 @@ export type StartTaskMessage = {
   task: string;
   runtime: RuntimeOverride;
   captureAuthorityId: string;
+  /**
+   * Private values the user typed for this task, keyed by bracket name. They
+   * live in extension memory for the session, are never persisted, and never
+   * appear in an observation, an outcome, or an event.
+   */
+  sensitiveValues?: Record<string, string>;
+};
+
+/** The user approved the proposed plan: the executor may now run it. */
+export type ApprovePlanMessage = {
+  type: "APPROVE_PLAN";
+  taskId: string;
+};
+
+/**
+ * The user's answer to one paused step: allow or decline a confirmation, or
+ * close a question. `answer` is only meaningful for a question and is never
+ * forwarded anywhere.
+ */
+export type ConfirmationDecisionMessage = {
+  type: "CONFIRMATION_DECISION";
+  taskId: string;
+  actionIndex: number;
+  approved: boolean;
+  answer?: string;
 };
 
 export type GetCaptureAuthorityMessage = {
@@ -159,6 +187,8 @@ export type AuditClosedMessage = {
 
 export type ExtensionMessage =
   | StartTaskMessage
+  | ApprovePlanMessage
+  | ConfirmationDecisionMessage
   | GetCaptureAuthorityMessage
   | CaptureRequestMessage
   | SnapshotResultMessage
@@ -174,7 +204,9 @@ export type ExtensionMessage =
   | AuditCloseMessage
   | TaskStateMessage
   | TaskStoppedMessage
-  | AuditClosedMessage;
+  | AuditClosedMessage
+  /** Progress the executor publishes while it runs an approved plan. */
+  | ExecutionReport;
 
 export type ExtensionResponse =
   | { ok: true; type: "ACK"; taskId?: string }
