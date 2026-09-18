@@ -11,6 +11,18 @@ import {
   type TaskState,
 } from "@orka/contracts";
 import { destinationWasNamed, planPlaceholders } from "../../shared/executorPolicy.ts";
+import {
+  CONFIDENCE_BAND_LABEL,
+  type CategoryBandCount,
+  type ModelVersion,
+} from "../../shared/localReport.ts";
+import {
+  METRIC_PHASE_LABEL,
+  SIH_WEIGHTS,
+  type LocalMetrics,
+  type MetricPhase,
+} from "../../shared/metrics.ts";
+import { formatBytes, type OutboundView } from "../../shared/outboundView.ts";
 import { useTaskSession, type PrivateValueRow } from "./useTaskSession.ts";
 import type { RuntimeOverride } from "../../shared/messages.ts";
 import "./App.css";
@@ -88,6 +100,27 @@ function screenshotUrl(screenshot: { mimeType: string; dataBase64: string }): st
   return `data:${screenshot.mimeType};base64,${screenshot.dataBase64}`;
 }
 
+/** `1.2 s`, `840 ms` -- a duration a person can read without counting zeros. */
+function formatMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "0 ms";
+  return ms >= 1000 ? `${Math.round((ms / 1000) * 10) / 10} s` : `${Math.round(ms)} ms`;
+}
+
+/**
+ * Confidence bands for one capture, in the order the detections were counted.
+ * Bands, not scores: enough to judge the redaction, without printing the map.
+ */
+function bandSummary(bands: readonly CategoryBandCount[]): string {
+  if (bands.length === 0) return "No detections.";
+  return bands
+    .map((entry) => `${entry.category} ${CONFIDENCE_BAND_LABEL[entry.band].toLowerCase()} ×${entry.count}`)
+    .join(" · ");
+}
+
+function modelSummary(models: readonly ModelVersion[]): string {
+  return models.map((model) => `${model.role} ${model.version}`).join(" · ");
+}
+
 /** One-line description of what an action would do, if it were approved. */
 function actionDetail(action: Action): string {
   switch (action.type) {
@@ -131,6 +164,8 @@ function App() {
     outcomes,
     pending,
     run,
+    metrics,
+    outbound,
     privateValues,
     setPrivateValues,
     declaredValueNames,
@@ -561,8 +596,119 @@ function App() {
               ? "No sensitive regions detected."
               : audit.redactionSummary.map((entry) => `${entry.category}: ${entry.count}`).join(" · ")}
           </div>
+          <p className="meta">Detection confidence: {bandSummary(audit.confidenceBands)}</p>
+          <p className="meta">Models: {modelSummary(audit.models)}</p>
           <p className="panel__footnote">
-            The exact detection map and original pixels remain in extension memory and are released when this session closes.
+            Bands, not boxes: the exact detection map and the original pixels stay in extension
+            memory and are released when this session closes.
+          </p>
+        </section>
+      )}
+
+      {metrics && (
+        <section className="card">
+          <div className="status-row">
+            <h2>This run, measured locally</h2>
+            <span className="meta">
+              {METRIC_PHASE_LABEL["capture"]} to {formatMs(metrics.totalMs)} in total
+            </span>
+          </div>
+          <ul className="plan metrics__list">
+            {metrics.samples.map((sample) => (
+              <li key={sample.phase} className="plan__item">
+                <div className="plan__head">
+                  <span className="plan__type">
+                    {METRIC_PHASE_LABEL[sample.phase as MetricPhase]}
+                  </span>
+                  <span className="meta">
+                    {sample.count > 1 ? `${sample.count} × ` : ""}
+                    {formatMs(sample.ms)}
+                  </span>
+                </div>
+              </li>
+            ))}
+            {metrics.samples.length === 0 && (
+              <li className="plan__item">
+                <div className="plan__detail">No phase has finished yet.</div>
+              </li>
+            )}
+          </ul>
+          <p className="meta">
+            Runtime {metrics.runtime}
+            {metrics.resource ? ` · Local JS heap ${metrics.resource.heapUsedMb} MB` : ""}
+            {` · ${metrics.categoryCounts.length} categories redacted`}
+          </p>
+          <div className="audit__summary">
+            <strong>SIH weights, as the score is defined</strong>
+            <ul className="metrics__weights">
+              {SIH_WEIGHTS.map((entry) => (
+                <li key={entry.id}>
+                  <span className="meta">
+                    {Math.round(entry.weight * 100)}% · {entry.label}
+                  </span>
+                  <span className={`chip chip--${entry.measurableLocally ? "low" : "medium"}`}>
+                    {entry.measurableLocally ? "measured here" : "not measurable locally"}
+                  </span>
+                  {!entry.measurableLocally && <span className="meta"> {entry.note}</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <p className="panel__footnote">
+            Timings are this device's own numbers, and two of the five weights are all a browser
+            can honestly score without labelled data. The rest wait on the benchmark corpus Phase 5
+            defers; nothing here is an estimate dressed as a measurement.
+          </p>
+        </section>
+      )}
+
+      {outbound && (
+        <section className="card">
+          <div className="status-row">
+            <h2>What left this device</h2>
+            <span className="meta">
+              {outbound.forbiddenKey === null
+                ? `no forbidden field · ${formatBytes(outbound.bytes)}`
+                : `unexpected field: ${outbound.forbiddenKey}`}
+            </span>
+          </div>
+          <div className="audit__summary">
+            <ul className="metrics__weights">
+              {outbound.fields.map((field) => (
+                <li key={field.path}>
+                  <span className="plan__type">{field.path}</span>
+                  <span className="meta">
+                    {" "}
+                    {field.kind}
+                    {field.kind === "array" || field.kind === "object"
+                      ? ` (${field.size})`
+                      : field.kind === "string"
+                        ? ` (${field.size} chars)`
+                        : ""}
+                    {field.note ? ` · ${field.note}` : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <p className="meta">
+            Field names and sizes only. The values are not shown here because they are not the
+            point: what matters is that these are the only fields the contract has.
+          </p>
+          <div className="audit__summary">
+            <strong>Never in the request</strong>
+            <ul className="metrics__weights">
+              {outbound.absent.map((group) => (
+                <li key={group.label}>
+                  <span className="plan__type">{group.label}</span>
+                  <span className="meta"> {group.detail}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <p className="panel__footnote">
+            Described from the request body itself, so this list cannot drift away from what is
+            actually sent.
           </p>
         </section>
       )}
