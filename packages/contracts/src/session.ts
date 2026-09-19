@@ -44,6 +44,7 @@ export type TaskEventType =
   | "APPROVE"
   | "COMPLETE"
   | "EXECUTION_FAILED"
+  | "NEXT_ROUND"
   | "STOP"
   | "RESET";
 
@@ -73,6 +74,9 @@ const TRANSITIONS: Record<TaskState, Partial<Record<TaskEventType, TaskState>>> 
   executing: {
     COMPLETE: "completed",
     EXECUTION_FAILED: "failed",
+    // Multi-round loop: after one approved step runs, re-capture and re-plan
+    // against the page as it now looks, instead of running a pre-baked plan.
+    NEXT_ROUND: "scanning",
     STOP: "stopped",
   },
   stopped: {
@@ -99,11 +103,19 @@ export class InvalidTransitionError extends Error {
 export type TaskSessionOptions = {
   maxActions?: number;
   maxDurationMs?: number;
+  maxRounds?: number;
   now?: () => number;
 };
 
 const DEFAULT_MAX_ACTIONS = 10;
 const DEFAULT_MAX_DURATION_MS = 90_000;
+
+/**
+ * Hard cap on round-trips in one multi-round Task Session, independent from
+ * `MAX_ACTIONS_PER_PLAN`. A "round" is one capture -> one plan -> one human
+ * decision -> (if approved) one executed step. See docs2/04-PRODUCT-PRD.md §4.
+ */
+export const MAX_ROUNDS_PER_SESSION = 6;
 
 /**
  * A single Task Session. Construct one per user-initiated task; discard it
@@ -113,13 +125,20 @@ export class TaskSession {
   private _state: TaskState = "idle";
   private _actionCount = 0;
   private _startedAt: number | null = null;
+  private _roundCount = 0;
+  /** Machine time already banked in the current round (approval time excluded). */
+  private _roundActiveMs = 0;
+  /** Start of the current active segment, or null while paused (awaiting_approval/idle). */
+  private _segmentStartedAt: number | null = null;
   private readonly maxActions: number;
   private readonly maxDurationMs: number;
+  private readonly maxRounds: number;
   private readonly now: () => number;
 
   constructor(options: TaskSessionOptions = {}) {
     this.maxActions = options.maxActions ?? DEFAULT_MAX_ACTIONS;
     this.maxDurationMs = options.maxDurationMs ?? DEFAULT_MAX_DURATION_MS;
+    this.maxRounds = options.maxRounds ?? MAX_ROUNDS_PER_SESSION;
     this.now = options.now ?? Date.now;
   }
 
@@ -129,6 +148,11 @@ export class TaskSession {
 
   get actionCount(): number {
     return this._actionCount;
+  }
+
+  /** How many rounds `startRound()` has begun in this session. */
+  get roundCount(): number {
+    return this._roundCount;
   }
 
   get isActive(): boolean {
@@ -160,9 +184,30 @@ export class TaskSession {
       this._startedAt = this.now();
       this._actionCount = 0;
     }
+    // Per-round active clock: banks machine time (capture+scan+plan+act) and
+    // freezes while a step waits on the human, so the per-round budget never
+    // counts confirmation time. See docs2/04-PRODUCT-PRD.md §4.
+    if (next === "scanning") {
+      // START_SCAN (round 1) or NEXT_ROUND (a later round): start fresh.
+      this._roundActiveMs = 0;
+      this._segmentStartedAt = this.now();
+      this._actionCount = 0;
+    } else if (next === "awaiting_approval") {
+      // Pause: stop banking time while the user decides.
+      if (this._segmentStartedAt !== null) {
+        this._roundActiveMs += this.now() - this._segmentStartedAt;
+        this._segmentStartedAt = null;
+      }
+    } else if (next === "executing" && event === "APPROVE") {
+      // Resume: the human approved, machine work continues.
+      this._segmentStartedAt = this.now();
+    }
     if (event === "RESET") {
       this._startedAt = null;
       this._actionCount = 0;
+      this._roundCount = 0;
+      this._roundActiveMs = 0;
+      this._segmentStartedAt = null;
     }
     this._state = next;
     return this._state;
@@ -206,6 +251,41 @@ export class TaskSession {
   enforceTimeout(): boolean {
     const elapsed = this.elapsedMs();
     if (elapsed === null || elapsed < this.maxDurationMs) return false;
+    return this.stop();
+  }
+
+  /**
+   * Milliseconds of *machine* work banked in the current round -- the
+   * capture+scan+plan+act segments, with any `awaiting_approval` pause
+   * excluded. Zero before the first round begins.
+   */
+  roundActiveMs(): number {
+    if (this._segmentStartedAt === null) return this._roundActiveMs;
+    return this._roundActiveMs + (this.now() - this._segmentStartedAt);
+  }
+
+  /**
+   * Begins a new round and enforces the round cap (Decision 1). The loop calls
+   * this before each capture; it auto-stops the session once the cap is hit and
+   * returns `{ stopped: true }` so the caller does not start another round.
+   */
+  startRound(): { stopped: boolean } {
+    this._roundCount += 1;
+    if (this._roundCount > this.maxRounds) {
+      this.stop();
+      return { stopped: true };
+    }
+    return { stopped: false };
+  }
+
+  /**
+   * Per-round wall-clock guard: stops the session once this round's *active*
+   * machine time exceeds the budget, ignoring time spent awaiting the human.
+   * Safe to call from any state; a no-op before a round has started or when
+   * still within budget.
+   */
+  enforceRoundTimeout(): boolean {
+    if (this.roundActiveMs() < this.maxDurationMs) return false;
     return this.stop();
   }
 }

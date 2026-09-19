@@ -4,6 +4,7 @@ import {
   ActionPlanSchema,
   CONTRACT_VERSION,
   InvalidTransitionError,
+  MAX_ROUNDS_PER_SESSION,
   SanitizationFailureSchema,
   SanitizedObservationSchema,
   TASK_STATES,
@@ -291,6 +292,97 @@ describe("TaskSession transitions", () => {
     now = 1500;
     expect(session.enforceTimeout()).toBe(true);
     expect(session.state).toBe("stopped");
+  });
+});
+
+describe("TaskSession multi-round loop", () => {
+  /** Drives one full round from executing back to executing via NEXT_ROUND. */
+  function nextRound(session: TaskSession) {
+    session.send("NEXT_ROUND");
+    session.send("SANITIZED");
+    session.send("START_PLANNING");
+    session.send("PLAN_READY");
+    session.send("APPROVE");
+  }
+
+  test("NEXT_ROUND re-enters scanning only from executing", () => {
+    const session = new TaskSession();
+    driveTo(session, "executing");
+    expect(session.can("NEXT_ROUND")).toBe(true);
+    expect(session.send("NEXT_ROUND")).toBe("scanning");
+  });
+
+  test("NEXT_ROUND is illegal outside executing", () => {
+    for (const state of ["idle", "scanning", "sanitized", "planning", "awaiting_approval"] as const) {
+      const session = new TaskSession();
+      driveTo(session, state);
+      expect(session.can("NEXT_ROUND")).toBe(false);
+      expect(() => session.send("NEXT_ROUND")).toThrow(InvalidTransitionError);
+    }
+  });
+
+  test("startRound stops the session once the round cap is reached", () => {
+    const session = new TaskSession({ maxRounds: 3 });
+    driveTo(session, "executing");
+    expect(session.startRound()).toEqual({ stopped: false }); // round 1
+    expect(session.startRound()).toEqual({ stopped: false }); // round 2
+    expect(session.startRound()).toEqual({ stopped: false }); // round 3
+    expect(session.state).toBe("executing");
+    expect(session.startRound()).toEqual({ stopped: true }); // round 4 > cap
+    expect(session.state).toBe("stopped");
+    expect(session.roundCount).toBe(4);
+  });
+
+  test("the default round cap is six", () => {
+    expect(MAX_ROUNDS_PER_SESSION).toBe(6);
+  });
+
+  test("round active time excludes time spent awaiting approval", () => {
+    let now = 0;
+    const session = new TaskSession({ now: () => now });
+    session.send("START_SCAN"); // segment starts at 0
+    now = 1000; // 1s of scan/plan work
+    session.send("SANITIZED");
+    session.send("START_PLANNING");
+    session.send("PLAN_READY"); // pause: banks 1000ms
+    now = 60_000; // user thinks for ~59s -- must not count
+    expect(session.roundActiveMs()).toBe(1000);
+    session.send("APPROVE"); // resume at 60000
+    now = 60_500; // 500ms of execution
+    expect(session.roundActiveMs()).toBe(1500);
+  });
+
+  test("enforceRoundTimeout ignores approval time but stops on active-work overrun", () => {
+    let now = 0;
+    const session = new TaskSession({ maxDurationMs: 1000, now: () => now });
+    session.send("START_SCAN");
+    session.send("SANITIZED");
+    session.send("START_PLANNING");
+    session.send("PLAN_READY"); // banks ~0ms, then pauses
+    now = 10_000; // long human pause
+    expect(session.enforceRoundTimeout()).toBe(false); // approval time excluded
+    session.send("APPROVE"); // resume at 10000
+    now = 11_500; // 1500ms of active work > 1000ms budget
+    expect(session.enforceRoundTimeout()).toBe(true);
+    expect(session.state).toBe("stopped");
+  });
+
+  test("the per-round clock resets each round", () => {
+    let now = 0;
+    const session = new TaskSession({ maxDurationMs: 1000, now: () => now });
+    session.send("START_SCAN");
+    now = 900;
+    session.send("SANITIZED");
+    session.send("START_PLANNING");
+    session.send("PLAN_READY");
+    session.send("APPROVE");
+    now = 1000; // round 1 banked ~1000ms of active work
+    expect(session.roundActiveMs()).toBe(1000);
+    // Re-entering scanning for round 2 discards round 1's banked time.
+    session.send("NEXT_ROUND"); // segment restarts at now=1000
+    now = 1500; // only 500ms into round 2
+    expect(session.roundActiveMs()).toBe(500);
+    expect(session.enforceRoundTimeout()).toBe(false);
   });
 });
 
