@@ -236,6 +236,10 @@ more often.
 Both are product/security decisions, not implementation details, which is why they're called out
 separately from §5 rather than folded into a phase's task list.
 
+**Resolved:** both decisions have been made and turned into an ordered execution plan in
+[docs/V2-EXECUTION-PROMPT.md](V2-EXECUTION-PROMPT.md) — see its §1. Phase 6/9 implementation should
+follow that document, not re-litigate these decisions.
+
 ## 8. Proposed phase breakdown
 
 Mirrors the `phases/` numbering already in the repo.
