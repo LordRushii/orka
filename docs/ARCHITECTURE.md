@@ -81,8 +81,10 @@ only. Missing, hidden, disabled, moved, or duplicated targets are
 refused, and the run stops rather than trying the next step against a page it no longer understands.
 A target cited by a redaction placeholder (`[PHONE]`) is matched by role and box, because the live
 page necessarily still carries the real name.
-- **Bounded scope**: one active tab, no hidden or background-tab action, at most 10 browser actions,
-at most 90 seconds, and no automatic cross-origin continuation.
+- **Bounded scope**: one active tab, no hidden or background-tab action, at most 6 rounds with at
+most 90 seconds of active work each (approval time excluded), and no automatic cross-origin
+continuation. Each round captures the page, plans exactly one step, waits for approval, and runs
+that one step; the next round re-captures before it plans.
 
 Sensitive Values stay local throughout. A plan may name one by bracket (`[PHONE_1]`); the executor
 resolves it in memory right before the keystroke, only after the user confirms that variable by name,

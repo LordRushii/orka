@@ -43,6 +43,6 @@ The On-Device Privacy Browser Agent is a browser extension that locally captures
 ## User experience requirements
 
 - Side-panel task session states: `Idle`, `Scanning locally`, `Sanitized context sent`, `Awaiting approval`, `Executing`, `Stopped`.
-- Maximum 10 actions and 90 seconds per task. Stop after navigation to a new origin until the user approves continuation.
+- At most 6 rounds per task, with up to 90 seconds of active work (capture, scan, plan, act) per round. Time spent waiting for the user's approval is not counted. Each round plans and runs one step, re-reading the page first, so a later step is never executed against a page an earlier step changed. Stop after navigation to a new origin until the user approves continuation.
 - Require confirmation for typing, selecting, submitting, downloads, permission prompts, and all actions outside the low-risk navigation set.
 - Ask for sensitive values only in the local side panel, mark them clearly, and erase them at task end.

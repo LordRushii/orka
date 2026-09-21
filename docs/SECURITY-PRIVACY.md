@@ -28,7 +28,7 @@ Redaction is opaque and labelled by broad class. Never send originals, OCR fragm
 
 ## Action policy
 
-Low-risk navigation actions may run after a visible proposal. Typing, selection, submission, download, permission prompt, or cross-origin continuation requires confirmation. The extension stops after 10 actions, 90 seconds, a policy violation, a privacy error, or the user pressing Stop.
+Low-risk navigation actions may run after a visible proposal. Typing, selection, submission, download, permission prompt, or cross-origin continuation requires confirmation. The extension stops after 6 rounds, once a round's 90 seconds of active work (capture, scan, plan, act) is spent, a policy violation, a privacy error, or the user pressing Stop. Time spent waiting for the user's approval is not counted against the round budget, and each round plans and runs only one step against a fresh capture.
 
 ## Action execution controls
 
