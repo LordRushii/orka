@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   CLOUD_PROVIDER_IDS,
+  MAX_ROUNDS_PER_SESSION,
   PROVIDER_IDS,
   type Action,
   type ActionOutcome,
@@ -26,6 +27,9 @@ import { formatBytes, type OutboundView } from "../../shared/outboundView.ts";
 import { useTaskSession, type PrivateValueRow } from "./useTaskSession.ts";
 import type { RuntimeOverride } from "../../shared/messages.ts";
 import "./App.css";
+
+/** The session's round ceiling, so the panel's copy cannot drift from policy. */
+const MAX_ROUNDS = MAX_ROUNDS_PER_SESSION;
 
 const RUNTIMES: readonly { id: RuntimeOverride; label: string }[] = [
   { id: "auto", label: "Auto" },
@@ -161,6 +165,7 @@ function App() {
     settings,
     providers,
     gatewayStatus,
+    round,
     outcomes,
     pending,
     run,
@@ -239,6 +244,7 @@ function App() {
       <section className="card">
         <div className="status-row">
           <span className={badgeClass}>{STATE_LABEL[state]}</span>
+          {round > 0 && <span className="meta">Round {round} of {MAX_ROUNDS}</span>}
           {runtime && <span className="meta">{runtime.mode}</span>}
         </div>
         {requestError && <p className="error-text">{requestError}</p>}
@@ -425,7 +431,7 @@ function App() {
         )}
         {state === "awaiting_approval" && (
           <button type="button" className="button button--primary" onClick={() => void approve()}>
-            Approve &amp; run
+            Approve step
           </button>
         )}
         {canStop && (
@@ -480,8 +486,8 @@ function App() {
           )}
           <p className="panel__footnote">
             {state === "awaiting_approval"
-              ? "Nothing has run. Approving starts the first step; risky steps are confirmed one at a time."
-              : "This plan has been approved. Steps are confirmed one at a time as they come up."}
+              ? "Nothing has run yet. Approving runs this one step; Orka then re-reads the page and proposes the next."
+              : "This step has been approved. Risky steps are confirmed one at a time as they come up."}
           </p>
         </section>
       )}
@@ -545,8 +551,8 @@ function App() {
           {run?.summary && <p className="plan__detail">{run.summary}</p>}
           {run?.failure && <p className="error-text">{run.failure.message}</p>}
           <ol className="plan">
-            {outcomes.map((entry) => (
-              <li key={entry.actionIndex} className="plan__item">
+            {outcomes.map((entry, position) => (
+              <li key={`${position}-${entry.action.type}`} className="plan__item">
                 <div className="plan__head">
                   <span className="plan__type">{entry.action.type}</span>
                   <span
@@ -714,8 +720,9 @@ function App() {
       )}
 
       <p className="panel__footnote">
-        Orka only acts on the tab you are looking at, for up to 10 actions or 90 seconds. Stop ends
-        the task at any point.
+        Orka only acts on the tab you are looking at, for at most {MAX_ROUNDS} rounds with 90 seconds
+        of active work each. Time spent waiting for your approval does not count. Stop ends the task
+        at any point.
       </p>
     </main>
   );

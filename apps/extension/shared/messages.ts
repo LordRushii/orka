@@ -5,6 +5,7 @@ import type {
 } from "@orka/privacy-engine";
 export type { RuntimeOverride } from "@orka/privacy-engine";
 import type {
+  Action,
   ActionPlan,
   PlanMetadata,
   ProviderDescriptor,
@@ -41,6 +42,7 @@ export const EXTENSION_MESSAGE_TYPES = {
   TASK_STATE: "TASK_STATE",
   TASK_STOPPED: "TASK_STOPPED",
   AUDIT_CLOSED: "AUDIT_CLOSED",
+  ROUND_PROGRESS: "ROUND_PROGRESS",
 } as const;
 
 export type StartTaskMessage = {
@@ -207,6 +209,20 @@ export type TaskStoppedMessage = {
   taskId: string;
 };
 
+/**
+ * Multi-round progress (Phase 6). A round is one capture -> one plan -> one
+ * human decision -> (if approved) one executed step. The panel shows which
+ * round is in flight; the action and summary describe a step that just ran.
+ */
+export type RoundProgressMessage = {
+  type: "ROUND_PROGRESS";
+  taskId: string;
+  round: number;
+  phase: "started" | "step";
+  action?: Action;
+  summary?: string;
+};
+
 export type AuditClosedMessage = {
   type: "AUDIT_CLOSED";
   taskId: string;
@@ -232,6 +248,7 @@ export type ExtensionMessage =
   | TaskStateMessage
   | TaskStoppedMessage
   | AuditClosedMessage
+  | RoundProgressMessage
   | MetricsReportMessage
   /** Progress the executor publishes while it runs an approved plan. */
   | ExecutionReport;

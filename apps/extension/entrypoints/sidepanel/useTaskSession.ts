@@ -132,6 +132,8 @@ async function ensureGatewayPermission(gatewayUrl: string): Promise<boolean> {
 export function useTaskSession() {
   const [taskId, setTaskId] = useState<string | null>(null);
   const [state, setState] = useState<TaskState>("idle");
+  /** Which multi-round round is in flight, for the panel's progress copy. */
+  const [round, setRound] = useState(0);
   const [runtime, setRuntime] = useState<TaskStateMessage["runtime"]>();
   const [audit, setAudit] = useState<LocalAuditView>();
   const [observation, setObservation] = useState<SanitizedObservation>();
@@ -242,17 +244,22 @@ export function useTaskSession() {
         // A finished run has no private values left in the background; the
         // form does not keep a second copy.
         setPrivateValues([emptyPrivateValueRow()]);
+      } else if (event.type === "ROUND_PROGRESS") {
+        setTaskId(event.taskId);
+        setRound(event.round);
       } else if (event.type === "TASK_STOPPED") {
         setState("stopped");
         setAudit(undefined);
         setObservation(undefined);
         setPending(undefined);
         setOutbound(undefined);
+        setRound(0);
         setPrivateValues([emptyPrivateValueRow()]);
         setDeclaredValueNames([]);
       } else if (isAuditClosed(event)) {
         setTaskId(null);
         setState("idle");
+        setRound(0);
         setAudit(undefined);
         setObservation(undefined);
         setFailure(undefined);
@@ -304,6 +311,7 @@ export function useTaskSession() {
       setRun(undefined);
       setMetrics(undefined);
       setOutbound(undefined);
+      setRound(0);
       const authority = await browser.runtime.sendMessage({ type: "GET_CAPTURE_AUTHORITY" });
       if (!authority?.ok || typeof authority.authorityId !== "string") {
         setRequestError(authority?.message ?? "Reopen Orka from the toolbar before starting a task.");
@@ -433,6 +441,7 @@ export function useTaskSession() {
     () => ({
       taskId,
       state,
+      round,
       runtime,
       audit,
       observation,
@@ -464,6 +473,7 @@ export function useTaskSession() {
     [
       taskId,
       state,
+      round,
       runtime,
       audit,
       observation,

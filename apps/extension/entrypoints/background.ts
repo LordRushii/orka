@@ -12,14 +12,18 @@ import {
 import {
   SensitiveVariablesSchema,
   TaskSession,
+  type Action,
   type ActionPlan,
+  type PriorActionSummary,
   type SanitizationFailureCode,
   type SanitizedObservation,
   type SensitiveVariables,
+  type StopReason,
 } from "@orka/contracts";
 import {
   CaptureAuthorityError,
   captureFromAuthority,
+  urlOrigin,
   validateCaptureAuthority,
   type CaptureAuthority,
   type CaptureAuthorityBrowser,
@@ -52,7 +56,9 @@ import {
   type ActionExecutor,
   type ApprovalDecision,
   type ApprovalRequest,
+  type ExecutionContext,
   type ExecutorBrowser,
+  type StepRun,
 } from "../shared/executor.ts";
 import { browserInjectionApi, createPagePort } from "../shared/pagePort.ts";
 import { isExtensionMessage } from "../shared/messages.ts";
@@ -71,8 +77,14 @@ import {
   type PlannerSettings,
 } from "../shared/settings.ts";
 import { createPixelWorkers, type PixelWorkers } from "../shared/pixelWorkers.ts";
-import { createEngine, TASK_SESSION_TIMEOUT_MS } from "../shared/engine.ts";
+import { createEngine } from "../shared/engine.ts";
 import { releaseTaskResources } from "../shared/taskCleanup.ts";
+import {
+  runTaskLoop,
+  type TaskLoopEvent,
+  type TaskLoopPorts,
+  type TaskLoopRun,
+} from "../shared/taskLoop.ts";
 import { describeModelVersions, summarizeConfidenceBands } from "../shared/localReport.ts";
 import {
   createMetricsRecorder,
@@ -83,6 +95,14 @@ import {
 
 /** Upper bound on a manual "Check gateway" probe, so the button always settles. */
 const GATEWAY_CHECK_TIMEOUT_MS = 5_000;
+
+/**
+ * How often the per-round watchdog re-checks the session's active-work clock.
+ * A round's budget is machine time, and only `enforceRoundTimeout` can tell
+ * machine time from time the user spent deciding, so the check has to visit the
+ * session rather than rely on a single wall-clock timer.
+ */
+const ROUND_WATCHDOG_TICK_MS = 1_000;
 
 type CaptureFlowErrorCode = "CAPTURE_FAILED" | "RESTRICTED_PAGE";
 
@@ -105,6 +125,7 @@ type PendingDecision = {
 
 type ActiveTask = {
   taskId: string;
+  /** What the user asked for; also the CaptureInput payload the planner sees. */
   task: string;
   session: TaskSession;
   profile: RuntimeProfile;
@@ -116,14 +137,30 @@ type ActiveTask = {
   timeoutHandle?: ReturnType<typeof setTimeout>;
   audit?: LocalAudit;
   plannerAbort?: AbortController;
-  /** The approved plan and the observation every target is checked against. */
+  /**
+   * The round's approved step and the observation every target in it is checked
+   * against. Replaced each round: a later round's plan is validated against the
+   * page as it looks *now*, never against the page an earlier round saw.
+   */
   plan?: ActionPlan;
   observation?: SanitizedObservation;
+  /**
+   * What already happened, in order -- the loop's cross-round memory. Each
+   * round's capture folds this into `CaptureInput.priorActions`, so the planner
+   * sees what it already tried instead of re-proposing it (Phase 6).
+   */
+  priorActions: PriorActionSummary[];
   /** Private values for this task; memory only, cleared when the run ends. */
   sensitiveValues: SensitiveVariables;
   executor?: ActionExecutor;
   executorAbort?: AbortController;
   pendingDecision?: PendingDecision;
+  /** How the user's round-by-round approval resolves (one pending at a time). */
+  pendingRound?: { resolve(decision: ApprovalDecision): void };
+  /** Whether the session-level EXECUTION_STARTED has already been published. */
+  runStarted?: boolean;
+  /** Whether a terminal event for this task has already been published. */
+  settled?: boolean;
   /** Local timings for this session; aggregated numbers only (see metrics.ts). */
   metrics: MetricsRecorder;
   modelManager: ReturnType<typeof createPixelModelManager>;
@@ -418,7 +455,8 @@ function clearExecutionState(task: ActiveTask): void {
 }
 
 async function failExecution(task: ActiveTask, message: string): Promise<void> {
-  if (activeTask !== task) return;
+  if (activeTask !== task || task.cancelled || task.settled) return;
+  task.settled = true;
   clearExecutionState(task);
   releaseTask(task);
   publishMetrics(task, "failed");
@@ -434,68 +472,49 @@ async function failExecution(task: ActiveTask, message: string): Promise<void> {
   publishState(task);
 }
 
-/** Runs the approved plan, then lands the Task Session in its terminal state. */
-async function runExecution(task: ActiveTask): Promise<void> {
-  const { plan, observation, executor, executorAbort } = task;
-  if (!plan || !observation || !executor || !executorAbort) return;
-
-  const run = await executor.execute(plan, {
-    taskId: task.taskId,
-    observation,
-    tabId: task.authority.tabId,
-    windowId: task.authority.windowId,
-    origin: task.origin,
-    session: task.session,
-    sensitiveValues: task.sensitiveValues,
-    signal: executorAbort.signal,
+/**
+ * The loop's `requestApproval` port: one round's step, pending the user.
+ *
+ * The plan is already with the panel (`PLAN_RESULT`); this waits for the
+ * `APPROVE_PLAN` message and settles as "declined" on Stop, the per-round
+ * watchdog, or a replacement task -- the only safe default when no answer
+ * arrives.
+ */
+function roundApprovalPort(task: ActiveTask): Promise<ApprovalDecision> {
+  if (activeTask !== task || task.cancelled || !task.session.can("APPROVE")) {
+    return Promise.resolve({ approved: false });
+  }
+  return new Promise<ApprovalDecision>((resolve) => {
+    let settled = false;
+    const finish = (decision: ApprovalDecision): void => {
+      if (settled) return;
+      settled = true;
+      if (task.pendingRound?.resolve === finish) task.pendingRound = undefined;
+      resolve(decision);
+    };
+    task.pendingRound = { resolve: finish };
   });
-
-  clearExecutionState(task);
-  // A Stop, a timeout, or a replacement task already published its own ending,
-  // and must not be re-published over by this run finishing.
-  if (activeTask !== task || task.cancelled) return;
-
-  publishMetrics(task, run.status);
-
-  if (run.status === "stopped") {
-    task.cancelled = true;
-    releaseTask(task);
-    task.session.stop();
-    sendEvent({ type: "TASK_STOPPED", taskId: task.taskId });
-    publishState(task);
-    activeTask = null;
-    return;
-  }
-
-  // The plan ran to its end, or it failed: either way the user keeps the log,
-  // and the session stays dismissable.
-  releaseTask(task);
-  if (run.status === "completed" && task.session.can("COMPLETE")) task.session.send("COMPLETE");
-  if (run.status === "failed" && task.session.can("EXECUTION_FAILED")) {
-    task.session.send("EXECUTION_FAILED");
-  }
-  publishState(task);
 }
 
-function approvePlan(message: ApprovePlanMessage): ExtensionResponse {
-  if (!activeTask || activeTask.taskId !== message.taskId) {
-    return { ok: false, type: "ERROR", message: "No matching Task Session is active." };
-  }
-  const task = activeTask;
-  if (!task.session.can("APPROVE") || !task.plan || !task.observation) {
-    return { ok: false, type: "ERROR", message: "There is no plan waiting for approval." };
-  }
-  // The contract caps a plan too. Re-checking here means a plan cannot reach the
-  // executor by any other route with more steps than the policy allows.
-  if (task.plan.actions.length > MAX_EXECUTION_ACTIONS) {
-    return { ok: false, type: "ERROR", message: "That plan has more steps than Orka will run." };
+/**
+ * The loop's `executeStep` port: exactly one approved step, through the same
+ * executor as before. Every per-action policy -- live-DOM re-resolution, the
+ * confirmation port, origin and active-tab checks, the per-round budget -- is
+ * inside that call, unchanged; only the outer plan array is gone.
+ */
+async function executeRoundStep(task: ActiveTask, action: Action): Promise<StepRun> {
+  const observation = task.observation;
+  const abort = task.executorAbort;
+  if (!observation || !abort || task.cancelled) {
+    return {
+      status: "failed",
+      needsReplan: false,
+      failure: { code: "UNEXPECTED_ERROR", message: "The approved step is no longer available." },
+      summary: "The approved step is no longer available.",
+    };
   }
 
-  task.session.send("APPROVE");
-  publishState(task);
-  const controller = new AbortController();
-  task.executorAbort = controller;
-  task.executor = createActionExecutor({
+  const executor = (task.executor ??= createActionExecutor({
     browser: executorBrowser(),
     page: createPagePort(browserInjectionApi()),
     requestApproval: approvalPort(task),
@@ -505,12 +524,233 @@ function approvePlan(message: ApprovePlanMessage): ExtensionResponse {
       if (event.type === "ACTION_OUTCOME" && event.durationMs !== undefined) {
         task.metrics.record("action", event.durationMs);
       }
+      // The executor frames each step with EXECUTION_STARTED/FINISHED. In a
+      // multi-round session those are per-*step* events, and forwarding every
+      // one would read to the panel as the whole task starting and ending each
+      // round -- clearing the run log and dropping private values a later round
+      // still needs. One session-level start is kept, and `finishTask`
+      // publishes the single session-level finish.
+      if (event.type === "EXECUTION_STARTED") {
+        if (task.runStarted) return;
+        task.runStarted = true;
+      }
+      if (event.type === "EXECUTION_FINISHED") return;
       sendEvent(event);
     },
+  }));
+
+  const context: ExecutionContext = {
+    taskId: task.taskId,
+    observation,
+    tabId: task.authority.tabId,
+    windowId: task.authority.windowId,
+    origin: task.origin,
+    session: task.session,
+    sensitiveValues: task.sensitiveValues,
+    signal: abort.signal,
+  };
+  const run = await executor.executeStep(action, context);
+
+  // An approved step may have crossed origins: the executor made the user
+  // confirm that move before it continued, so the page they agreed to is the
+  // page the next round may capture. Without this, round 2 would fail the
+  // capture-authority origin check against a move the user already approved.
+  if (run.status === "completed") {
+    const landed = urlOrigin(
+      (await browser.tabs.get(task.authority.tabId).catch(() => undefined))?.url,
+    );
+    if (landed && landed !== task.origin) {
+      task.origin = landed;
+      task.authority = { ...task.authority, origin: landed };
+    }
+  }
+  return run;
+}
+
+/**
+ * The loop's `report` port. It carries round boundaries only: each step's own
+ * detail already reaches the panel as an `ACTION_OUTCOME`, so there is no
+ * second, divergent copy of the run log.
+ */
+function reportLoopEvent(task: ActiveTask, event: TaskLoopEvent): void {
+  if (activeTask !== task || task.cancelled) return;
+  sendEvent({
+    type: "ROUND_PROGRESS",
+    taskId: task.taskId,
+    round: event.round,
+    phase: event.type === "ROUND_STARTED" ? "started" : "step",
+    ...(event.type === "STEP_EXECUTED" ? { action: event.action, summary: event.summary } : {}),
   });
-  void runExecution(task).catch((error: unknown) => {
-    void failExecution(task, safeErrorMessage(error, "The approved plan could not be run."));
+}
+
+/**
+ * Replaces the single whole-session timeout with a *per-round* guard.
+ *
+ * The session already owns the precise clock: `enforceRoundTimeout` stops a
+ * round once its active machine time exceeds the budget, and time spent
+ * waiting for the user is not machine time. A wall-clock timer cannot make
+ * that distinction, so this re-arms itself and asks the session each tick.
+ */
+function armRoundWatchdog(task: ActiveTask): void {
+  task.timeoutHandle = setTimeout(() => {
+    if (activeTask !== task || task.cancelled || task.settled) return;
+    if (task.session.enforceRoundTimeout()) {
+      task.cancelled = true;
+      task.settled = true;
+      task.pendingRound?.resolve({ approved: false });
+      task.pendingRound = undefined;
+      releaseTask(task);
+      publishMetrics(task, "stopped");
+      sendEvent({ type: "TASK_STOPPED", taskId: task.taskId });
+      publishState(task);
+      activeTask = null;
+      return;
+    }
+    armRoundWatchdog(task);
+  }, ROUND_WATCHDOG_TICK_MS);
+}
+
+/**
+ * Drives the whole Task Session: the module that owns the loop (taskLoop.ts)
+ * decides *what happens next*, and everything browser-, planner-, or
+ * user-shaped is a port here.
+ */
+async function runTask(task: ActiveTask): Promise<void> {
+  try {
+    // Once per session, not once per round: the models and their workers are
+    // the expensive part of a scan, and a round is a capture, not a new
+    // session (docs2/02-pii-engine-speed.md Fix 4).
+    const models = await task.modelManager.initialize(task.profile);
+    await task.pixelWorkers.initialize(models, task.profile);
+    currentTask(task);
+  } catch (error) {
+    releaseTask(task);
+    if (error instanceof ModelLoadFailedError) {
+      await failTask(task, "MODEL_LOAD_FAILED", error.message);
+      return;
+    }
+    await failTask(task, "CAPTURE_FAILED", safeErrorMessage(error, "Local capture failed."));
+    return;
+  }
+
+  task.executorAbort = new AbortController();
+  armRoundWatchdog(task);
+
+  let run: TaskLoopRun;
+  try {
+    run = await runTaskLoop(
+      { session: task.session },
+      {
+        scan: (priorActions) => scanRound(task, priorActions),
+        plan: (observation) => planRound(task, observation),
+        requestApproval: () => roundApprovalPort(task),
+        executeStep: (action) => executeRoundStep(task, action),
+        report: (event) => reportLoopEvent(task, event),
+      } satisfies TaskLoopPorts,
+    );
+  } catch (error) {
+    await failExecution(task, safeErrorMessage(error, "The task could not be completed."));
+    return;
+  }
+
+  finishTask(task, run);
+}
+
+/** Maps the loop's own stop reasons onto the contract's. */
+function loopStopReason(reason: TaskLoopRun["stopReason"]): StopReason {
+  switch (reason) {
+    case "timeout":
+      return "timeout";
+    case "denied":
+      return "denied";
+    case "round_cap":
+      // Running out of rounds is the session's own policy ceiling.
+      return "policy";
+    default:
+      return "user";
+  }
+}
+
+/**
+ * Lands the session in its terminal state once the loop is done.
+ *
+ * Stop, the per-round watchdog, and a scan/plan failure each publish their own
+ * ending from their own path -- the `cancelled`/`settled`/terminal guards keep
+ * this from writing a second one over them.
+ */
+function finishTask(task: ActiveTask, run: TaskLoopRun): void {
+  if (activeTask !== task || task.cancelled || task.settled) return;
+  if (task.session.isTerminal) return;
+  task.settled = true;
+
+  clearExecutionState(task);
+  releaseTask(task);
+  publishMetrics(task, run.status);
+
+  if (run.status === "completed") {
+    if (task.session.can("COMPLETE")) task.session.send("COMPLETE");
+    sendEvent({
+      type: "EXECUTION_FINISHED",
+      taskId: task.taskId,
+      status: "completed",
+      summary: run.summary,
+    });
+    publishState(task);
+    return;
+  }
+
+  if (run.status === "failed") {
+    if (task.session.can("EXECUTION_FAILED")) task.session.send("EXECUTION_FAILED");
+    sendEvent({
+      type: "EXECUTION_FINISHED",
+      taskId: task.taskId,
+      status: "failed",
+      failure: { code: "UNEXPECTED_ERROR", message: run.summary },
+      summary: run.summary,
+    });
+    publishState(task);
+    return;
+  }
+
+  // A denial, the round cap, or a stop the executor reported: the session ends
+  // and the user keeps the run log.
+  task.cancelled = true;
+  task.session.stop();
+  sendEvent({
+    type: "EXECUTION_FINISHED",
+    taskId: task.taskId,
+    status: "stopped",
+    ...(run.stopReason ? { stopReason: loopStopReason(run.stopReason) } : {}),
+    summary: run.summary,
   });
+  sendEvent({ type: "TASK_STOPPED", taskId: task.taskId });
+  publishState(task);
+  activeTask = null;
+}
+
+/**
+ * The user approved the round's proposed step. This resolves the loop's
+ * pending approval; the loop then runs the step and re-plans against the page
+ * as it looks afterwards.
+ */
+function approvePlan(message: ApprovePlanMessage): ExtensionResponse {
+  if (!activeTask || activeTask.taskId !== message.taskId) {
+    return { ok: false, type: "ERROR", message: "No matching Task Session is active." };
+  }
+  const task = activeTask;
+  const pending = task.pendingRound;
+  if (!pending || !task.session.can("APPROVE")) {
+    return { ok: false, type: "ERROR", message: "There is no step waiting for approval." };
+  }
+  // The contract caps a plan too. Re-checking here means a step cannot reach the
+  // executor by any other route with more actions than the policy allows.
+  if (task.plan && task.plan.actions.length > MAX_EXECUTION_ACTIONS) {
+    return { ok: false, type: "ERROR", message: "That step asks for more than Orka will run." };
+  }
+
+  task.session.send("APPROVE");
+  publishState(task);
+  pending.resolve({ approved: true });
   return { ok: true, type: "ACK", taskId: task.taskId };
 }
 
@@ -604,7 +844,8 @@ function auditView(
 }
 
 async function failTask(task: ActiveTask, code: SanitizationFailureCode, message: string) {
-  if (activeTask !== task || task.cancelled) return;
+  if (activeTask !== task || task.cancelled || task.settled) return;
+  task.settled = true;
   releaseTask(task);
   // A fail-closed scan still has timings worth showing: "it gave up after 2.1
   // seconds" is information, and `measure` recorded it on the failing path.
@@ -626,6 +867,7 @@ function failPlan(task: ActiveTask, error: PlannerFailure): void {
   // The proposal is terminal, so the local audit goes with it. The side panel
   // keeps its own copy of the audit it was already sent, so the user can still
   // inspect what was redacted before dismissing the session.
+  task.settled = true;
   releaseTask(task);
   task.session.send("PLAN_FAILED");
   sendEvent({
@@ -639,18 +881,22 @@ function failPlan(task: ActiveTask, error: PlannerFailure): void {
 }
 
 /**
- * The planner leg: the sanitized observation goes to the gateway and a
- * proposed plan comes back.
+ * The loop's `plan` port: one round's observation goes to the gateway, and the
+ * single step to propose comes back.
  *
- * Phase 3 ends at `awaiting_approval` -- the plan is shown, never executed.
- * This runs only after `scanTask` has published a successful sanitization, so
- * there is no path from a sanitization failure to a network call.
+ * Phase 6 plans *one step per round*, so this proposes exactly the first (and,
+ * under the prompt's one-action rule, only) action and publishes a single-step
+ * plan -- what the panel shows is what the round will run. It runs only after
+ * `scanRound` has published a successful sanitization, so there is no path from
+ * a sanitization failure to a network call.
  */
-async function planTask(task: ActiveTask, observation: SanitizedObservation): Promise<void> {
-  if (activeTask !== task || task.cancelled || !task.session.can("START_PLANNING")) return;
+async function planRound(task: ActiveTask, observation: SanitizedObservation): Promise<Action> {
+  const gone = (): boolean =>
+    activeTask !== task || task.cancelled || !task.session.can("START_PLANNING");
+  if (gone()) throw new CaptureFlowError("CAPTURE_FAILED", "Task Session is no longer active.");
 
   const settings = await loadPlannerSettings();
-  if (activeTask !== task || task.cancelled || !task.session.can("START_PLANNING")) return;
+  if (gone()) throw new CaptureFlowError("CAPTURE_FAILED", "Task Session is no longer active.");
 
   task.session.send("START_PLANNING");
   publishState(task);
@@ -679,16 +925,17 @@ async function planTask(task: ActiveTask, observation: SanitizedObservation): Pr
   // flight. `PLAN_READY` and `PLAN_FAILED` are both only legal from
   // `planning`, so this one guard covers the success and failure paths alike:
   // a late plan for an abandoned session is dropped, never shown.
-  if (activeTask !== task || task.cancelled || !task.session.can("PLAN_READY")) return;
+  if (activeTask !== task || task.cancelled || !task.session.can("PLAN_READY")) {
+    throw new CaptureFlowError("CAPTURE_FAILED", "Task Session is no longer active.");
+  }
 
   if (!result.ok) {
     failPlan(task, result);
-    return;
+    throw new CaptureFlowError("CAPTURE_FAILED", result.message);
   }
 
-  // Kept for the execution leg: the plan is what runs, and the observation is
-  // what every target in it is checked against before anything happens.
-  task.plan = result.plan;
+  const step = result.plan.actions[0]!;
+  task.plan = { ...result.plan, actions: [step] };
   task.observation = observation;
   // The provider's own view of how long the model took, as distinct from the
   // extension's round-trip measurement above: the demo shows both, because a
@@ -698,118 +945,113 @@ async function planTask(task: ActiveTask, observation: SanitizedObservation): Pr
   sendEvent({
     type: "PLAN_RESULT",
     taskId: task.taskId,
-    plan: result.plan,
+    plan: task.plan,
     meta: result.meta,
     outbound: result.outbound,
   });
   publishMetrics(task, "planned");
   publishState(task);
+  return step;
 }
 
-async function scanTask(task: ActiveTask): Promise<void> {
-  try {
-    const models = await task.modelManager.initialize(task.profile);
-    await task.pixelWorkers.initialize(models, task.profile);
+/**
+ * The loop's `scan` port: capture the active tab *now*, sanitize it locally,
+ * and hand the sanitized observation back. `priorActions` rides in on the
+ * capture, so the planner sees what already happened rather than being told
+ * separately -- the gateway stays stateless.
+ *
+ * Runs once per round, against the page as the previous step left it.
+ */
+async function scanRound(
+  task: ActiveTask,
+  priorActions: PriorActionSummary[],
+): Promise<SanitizedObservation> {
+  // Capture is one phase of the demo's timeline: everything from the
+  // active-tab screenshot to the decoded local bitmap, including the
+  // revalidation that has to pass before the page is read at all.
+  const { snapshot, captureTab, screenshot } = await task.metrics.measure("capture", async () => {
+    let capture;
+    try {
+      capture = await captureFromAuthority(task.authority, captureBrowser());
+    } catch (error) {
+      if (error instanceof CaptureAuthorityError) {
+        throw new CaptureFlowError("CAPTURE_FAILED", error.message);
+      }
+      throw error;
+    }
+    task.screenshotDataUrl = capture.screenshotDataUrl;
+    const pageSnapshot = await requestSnapshot(task.authority.tabId, task.taskId);
+    let tab;
+    try {
+      tab = await validateCaptureAuthority(task.authority, captureBrowser());
+    } catch (error) {
+      if (error instanceof CaptureAuthorityError) {
+        throw new CaptureFlowError("CAPTURE_FAILED", error.message);
+      }
+      throw error;
+    }
+    let decoded;
+    try {
+      decoded = await decodeCapturedScreenshot(task.screenshotDataUrl);
+    } catch (error) {
+      throw new CaptureFlowError(
+        "CAPTURE_FAILED",
+        safeErrorMessage(error, "The captured screenshot could not be decoded locally."),
+      );
+    }
+    task.screenshotDataUrl = "";
     currentTask(task);
+    return { snapshot: pageSnapshot, captureTab: tab, screenshot: decoded };
+  });
 
-    // Capture is one phase of the demo's timeline: everything from the
-    // active-tab screenshot to the decoded local bitmap, including the
-    // revalidation that has to pass before the page is read at all.
-    const { snapshot, captureTab, screenshot } = await task.metrics.measure("capture", async () => {
-      let capture;
-      try {
-        capture = await captureFromAuthority(task.authority, captureBrowser());
-      } catch (error) {
-        if (error instanceof CaptureAuthorityError) {
-          throw new CaptureFlowError("CAPTURE_FAILED", error.message);
-        }
-        throw error;
-      }
-      task.screenshotDataUrl = capture.screenshotDataUrl;
-      const pageSnapshot = await requestSnapshot(task.authority.tabId, task.taskId);
-      let tab;
-      try {
-        tab = await validateCaptureAuthority(task.authority, captureBrowser());
-      } catch (error) {
-        if (error instanceof CaptureAuthorityError) {
-          throw new CaptureFlowError("CAPTURE_FAILED", error.message);
-        }
-        throw error;
-      }
-      let decoded;
-      try {
-        decoded = await decodeCapturedScreenshot(task.screenshotDataUrl);
-      } catch (error) {
-        throw new CaptureFlowError(
-          "CAPTURE_FAILED",
-          safeErrorMessage(error, "The captured screenshot could not be decoded locally."),
-        );
-      }
-      task.screenshotDataUrl = "";
-      currentTask(task);
-      return { snapshot: pageSnapshot, captureTab: tab, screenshot: decoded };
-    });
+  const input: CaptureInput = {
+    taskId: task.taskId,
+    task: task.task,
+    url: captureTab.url ?? snapshot.urlOrigin,
+    viewport: {
+      width: snapshot.viewport.width,
+      height: snapshot.viewport.height,
+      devicePixelRatio: snapshot.viewport.devicePixelRatio,
+    },
+    capturedAt: Date.now(),
+    screenshot,
+    snapshot: scaleSnapshot(snapshot.snapshot, snapshot.viewport, screenshot),
+    priorActions,
+  };
+  const result = await task.metrics.measure("sanitize", () =>
+    createEngine(task.pixelWorkers).sanitize(input, task.profile),
+  );
+  currentTask(task);
 
-    const input: CaptureInput = {
-      taskId: task.taskId,
-      task: task.task,
-      url: captureTab.url ?? snapshot.urlOrigin,
-      viewport: {
-        width: snapshot.viewport.width,
-        height: snapshot.viewport.height,
-        devicePixelRatio: snapshot.viewport.devicePixelRatio,
-      },
-      capturedAt: Date.now(),
-      screenshot,
-      snapshot: scaleSnapshot(snapshot.snapshot, snapshot.viewport, screenshot),
-    };
-    const result = await task.metrics.measure("sanitize", () =>
-      createEngine(task.pixelWorkers).sanitize(input, task.profile),
-    );
-    currentTask(task);
-
-    if (!result.ok) {
-      await failTask(task, result.error.code, result.error.message);
-      return;
-    }
-    // The only category information the demo shows: the same coarse counts the
-    // observation carries, never the map they came from.
-    task.metrics.setCategoryCounts(result.observation.redactionSummary);
-
-    const encoder = createBrowserImageEncoder();
-    const originalScreenshot = await encodeForLocalAudit(encoder, result.localAudit.originalScreenshot);
-    task.audit = result.localAudit;
-    if (!task.session.can("SANITIZED")) {
-      // The session was stopped, timed out, or replaced while this scan was
-      // still running: release everything rather than leaving workers and the
-      // audit bitmap alive behind a task nobody can reach.
-      releaseTask(task);
-      return;
-    }
-    task.session.send("SANITIZED");
-    sendEvent({
-      type: "SANITIZATION_RESULT",
-      taskId: task.taskId,
-      observation: result.observation,
-      audit: auditView(task, result.observation, originalScreenshot),
-    });
-    publishState(task);
-    await planTask(task, result.observation);
-  } catch (error) {
-    // `failTask` no-ops once the task is no longer the active one, so release
-    // here first: an already-replaced task must not keep its capture, models,
-    // or workers alive.
-    releaseTask(task);
-    if (error instanceof CaptureFlowError) {
-      await failTask(task, error.code, error.message);
-      return;
-    }
-    if (error instanceof ModelLoadFailedError) {
-      await failTask(task, "MODEL_LOAD_FAILED", error.message);
-      return;
-    }
-    await failTask(task, "CAPTURE_FAILED", safeErrorMessage(error, "Local capture failed."));
+  if (!result.ok) {
+    // `failTask` publishes the specific code; this throw only unwinds the loop.
+    await failTask(task, result.error.code, result.error.message);
+    throw new CaptureFlowError("CAPTURE_FAILED", result.error.message);
   }
+  // The only category information the demo shows: the same coarse counts the
+  // observation carries, never the map they came from.
+  task.metrics.setCategoryCounts(result.observation.redactionSummary);
+
+  const encoder = createBrowserImageEncoder();
+  const originalScreenshot = await encodeForLocalAudit(encoder, result.localAudit.originalScreenshot);
+  task.audit = result.localAudit;
+  if (!task.session.can("SANITIZED")) {
+    // The session was stopped, timed out, or replaced while this scan was still
+    // running: release everything rather than leaving workers and the audit
+    // bitmap alive behind a task nobody can reach.
+    releaseTask(task);
+    throw new CaptureFlowError("CAPTURE_FAILED", "Task Session is no longer active.");
+  }
+  task.session.send("SANITIZED");
+  sendEvent({
+    type: "SANITIZATION_RESULT",
+    taskId: task.taskId,
+    observation: result.observation,
+    audit: auditView(task, result.observation, originalScreenshot),
+  });
+  publishState(task);
+  task.observation = result.observation;
+  return result.observation;
 }
 
 function isPngDataUrl(value: unknown): value is string {
@@ -857,6 +1099,7 @@ async function startTask(message: StartTaskMessage): Promise<ExtensionResponse> 
     authority,
     origin: authority.origin,
     cancelled: false,
+    priorActions: [],
     sensitiveValues: { ...privateValues.data },
     metrics: createMetricsRecorder(),
     modelManager: createPixelModelManager(),
@@ -865,17 +1108,11 @@ async function startTask(message: StartTaskMessage): Promise<ExtensionResponse> 
   task.metrics.setRuntime(profile.mode);
   activeTask = task;
   task.session.send("START_SCAN");
-  task.timeoutHandle = setTimeout(() => {
-    if (activeTask !== task || task.cancelled || !task.session.enforceTimeout()) return;
-    task.cancelled = true;
-    releaseTask(task);
-    publishMetrics(task, "stopped");
-    sendEvent({ type: "TASK_STOPPED", taskId: task.taskId });
-    publishState(task);
-    activeTask = null;
-  }, TASK_SESSION_TIMEOUT_MS);
   publishState(task);
-  void scanTask(task);
+  // The loop drives every round from here: capture, plan one step, wait for the
+  // user, run one step, re-capture. Stop, failure, and the per-round budget all
+  // end it, and each publishes its own ending exactly once.
+  void runTask(task);
   return { ok: true, type: "ACK", taskId: task.taskId };
 }
 
@@ -885,6 +1122,10 @@ function stopTask(taskId?: string): ExtensionResponse {
   }
   const task = activeTask;
   task.cancelled = true;
+  // Unblock a round that is waiting on the user: a stopped task settles its
+  // pending approval as declined, so the loop unwinds instead of hanging.
+  task.pendingRound?.resolve({ approved: false });
+  task.pendingRound = undefined;
   releaseTask(task);
   const stopped = task.session.stop();
   if (!stopped) return { ok: false, type: "ERROR", message: "Task Session is not active." };
@@ -901,8 +1142,10 @@ function closeAudit(taskId?: string): ExtensionResponse {
   }
   const task = activeTask;
   task.cancelled = true;
+  task.pendingRound?.resolve({ approved: false });
+  task.pendingRound = undefined;
   releaseTask(task);
-  // Dismissing the audit dismisses the whole session, including a proposal
+  // Dismissing the audit dismisses the whole session, including a step
   // still awaiting approval: stop it first so RESET is reachable and no
   // in-flight plan can resurface against a session the user has closed.
   task.session.stop();
