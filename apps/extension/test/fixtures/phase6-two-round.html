@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Orka — Phase 6 two-round fixture (synthetic)</title>
+    <style>
+      /* The Phase 6 fixture: a page that cannot be completed by a single
+         pre-baked plan, because the control the second step needs does not
+         exist until the first step runs.
+
+         Round 1 sees only the plan <select>. Choosing a plan reveals the seat
+         count field (and the confirm button). Round 2 captures the page again,
+         sees the field it could not have cited before, and plans the type step
+         against it. Synthetic by design: no network, no accounts, no real data.
+
+         Element boxes are stable so a fixture can cite them; open at 1280x800
+         or larger with 100% zoom and do not scroll before approving a step. */
+      html, body { margin: 0; padding: 0; font: 14px/1.4 system-ui, sans-serif; }
+      #stage { position: relative; width: 1240px; height: 760px; }
+      .box { position: absolute; box-sizing: border-box; }
+      button, a, input, select, label { font: inherit; }
+      #revealed { visibility: hidden; }
+      #status { font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <p class="box" style="left: 40px; top: 8px; width: 900px">
+        Last action the page saw: <strong id="status">(nothing yet)</strong>
+      </p>
+
+      <label class="box" for="plan" style="left: 40px; top: 40px; width: 200px; height: 18px">
+        Choose a plan
+      </label>
+      <select class="box" id="plan" name="plan" style="left: 40px; top: 60px; width: 220px; height: 32px">
+        <option value="">Select a plan…</option>
+        <option value="starter">Starter</option>
+        <option value="business">Business</option>
+        <option value="scale">Scale</option>
+      </select>
+
+      <!-- Hidden until a plan is chosen: this is what makes round 2 necessary. -->
+      <div id="revealed">
+        <label class="box" for="seats" style="left: 40px; top: 110px; width: 200px; height: 18px">
+          Number of seats
+        </label>
+        <input
+          class="box"
+          id="seats"
+          name="seats"
+          type="number"
+          min="1"
+          max="500"
+          style="left: 40px; top: 130px; width: 220px; height: 32px"
+        />
+        <button
+          class="box"
+          id="confirm"
+          type="button"
+          style="left: 40px; top: 180px; width: 160px; height: 34px"
+        >
+          Confirm selection
+        </button>
+      </div>
+
+      <p class="box" id="done" style="left: 40px; top: 240px; width: 640px; visibility: hidden">
+        Selection confirmed.
+      </p>
+    </div>
+
+    <script>
+      // The page's own behavior. The extension never relies on it for safety:
+      // every step is re-resolved against the live DOM before it runs.
+      var plan = document.getElementById("plan");
+      var revealed = document.getElementById("revealed");
+      var status = document.getElementById("status");
+      var done = document.getElementById("done");
+
+      plan.addEventListener("change", function () {
+        if (!plan.value) return;
+        revealed.style.visibility = "visible";
+        status.textContent = "chose the " + plan.options[plan.selectedIndex].text + " plan";
+      });
+
+      document.getElementById("confirm").addEventListener("click", function () {
+        done.style.visibility = "visible";
+        status.textContent = "confirmed " + plan.value;
+      });
+    </script>
+  </body>
+</html>

@@ -1,4 +1,5 @@
 import {
+  CONTRACT_VERSION,
   isSensitivePlaceholderToken,
   type Action,
   type ActionOutcome,
@@ -116,6 +117,24 @@ export type ExecutionRun = {
   summary: string;
 };
 
+/**
+ * Result of executing exactly one approved step (Phase 6's multi-round loop).
+ * `needsReplan` is the loop's continuation signal: the step succeeded and was
+ * not a `done`, so the background re-captures and re-plans against the page as
+ * it now looks instead of running a queued action planned against a page that
+ * no longer exists.
+ */
+export type StepRun = {
+  status: ExecutionRunStatus;
+  needsReplan: boolean;
+  /** The single step's outcome, whose reason is safe to show the user. */
+  outcome?: ActionOutcome;
+  stopReason?: StopReason;
+  failure?: { code: ExecutionOutcomeCode; message: string };
+  /** One safe sentence for the panel; never contains a resolved value. */
+  summary: string;
+};
+
 /** Events the executor publishes. The panel renders them; none carry a value. */
 export type ExecutionReport =
   | { type: "EXECUTION_STARTED"; taskId: string; total: number }
@@ -171,6 +190,12 @@ export type ExecutorDeps = {
  */
 export type ActionExecutor = {
   execute(plan: ActionPlan, context: ExecutionContext): Promise<ExecutionRun>;
+  /**
+   * Phase 6: runs exactly one approved step. Outcomes and events report the
+   * step at index 0, because a round's plan contributes exactly one executed
+   * action -- the loop, not the plan array, decides what happens next.
+   */
+  executeStep(action: Action, context: ExecutionContext): Promise<StepRun>;
   stop(reason: StopReason): void;
 };
 
@@ -199,7 +224,7 @@ export function createActionExecutor(deps: ExecutorDeps): ActionExecutor {
   let requestedStop: StopReason | undefined;
   let controller: AbortController | undefined;
 
-  return {
+  const executor: ActionExecutor = {
     stop(reason: StopReason) {
       requestedStop = reason;
       controller?.abort();
@@ -459,8 +484,10 @@ export function createActionExecutor(deps: ExecutorDeps): ActionExecutor {
             stop("user", "The Task Session is no longer running.");
             break;
           }
-          if (session.enforceTimeout()) {
-            stop("timeout", "The 90-second task budget ran out.");
+          if (session.enforceRoundTimeout()) {
+            // Per-round budget: machine work only, approval time excluded, and
+            // reset each round (docs2/04-PRODUCT-PRD.md §4).
+            stop("timeout", "This round's 90-second active-work budget ran out.");
             break;
           }
           // The plan contract already caps a plan at this many actions. This is
@@ -780,7 +807,33 @@ export function createActionExecutor(deps: ExecutorDeps): ActionExecutor {
         if (controller === abort) controller = undefined;
       }
     },
+
+    /**
+     * Phase 6 (multi-round loop): runs exactly one approved step and hands
+     * control back to the caller. The step runs through the same `execute`
+     * path as a whole plan, so every per-action policy is unchanged: live-DOM
+     * revalidation, the confirmation port, origin and active-tab checks, and
+     * the per-round budget all apply exactly as before. Only the outer loop
+     * over the plan's array is gone -- the background loop decides what runs
+     * next, after seeing what the page looks like now.
+     */
+    async executeStep(action: Action, context: ExecutionContext): Promise<StepRun> {
+      const run = await executor.execute(
+        { contractVersion: CONTRACT_VERSION, taskId: context.taskId, actions: [action] },
+        context,
+      );
+      const outcome = run.outcomes[0];
+      return {
+        status: run.status,
+        needsReplan: run.status === "completed" && action.type !== "done",
+        ...(outcome ? { outcome } : {}),
+        ...(run.stopReason !== undefined ? { stopReason: run.stopReason } : {}),
+        ...(run.failure !== undefined ? { failure: run.failure } : {}),
+        summary: run.summary,
+      };
+    },
   };
+  return executor;
 }
 
 /**
