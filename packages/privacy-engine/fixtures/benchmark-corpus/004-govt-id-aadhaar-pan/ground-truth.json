@@ -1,0 +1,20 @@
+{
+  "source": "synthetic",
+  "width": 1280,
+  "height": 800,
+  "regions": [
+    {
+      "category": "GOVT_ID",
+      "box": { "x": 120, "y": 210, "width": 190, "height": 22 },
+      "note": "A synthetic Aadhaar-format number (9999xxxxxx ranges are reserved for testing by UIDAI's own convention)."
+    },
+    {
+      "category": "GOVT_ID",
+      "box": { "x": 120, "y": 280, "width": 150, "height": 22 },
+      "note": "A synthetic PAN (AAAAA9999A shape). Invented; matches no real allotment."
+    }
+  ],
+  "documentedText": {
+    "GOVT_ID": "Aadhaar 9999 4321 8765; PAN BQPPR1234L (both constructed test values)"
+  }
+}

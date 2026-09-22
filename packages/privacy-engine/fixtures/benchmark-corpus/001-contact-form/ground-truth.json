@@ -1,0 +1,21 @@
+{
+  "source": "synthetic",
+  "width": 1280,
+  "height": 800,
+  "regions": [
+    {
+      "category": "EMAIL",
+      "box": { "x": 120, "y": 210, "width": 262, "height": 22 },
+      "note": "A contact email rendered as a body text run. The painted text is what an OCR pass reads; the box is the whole rendered run."
+    },
+    {
+      "category": "PHONE",
+      "box": { "x": 120, "y": 280, "width": 148, "height": 22 },
+      "note": "A US-style phone number in a contact block. Dashes are separators; the detector classifies the digit run."
+    }
+  ],
+  "documentedText": {
+    "EMAIL": "jane.doe@example.com (synthetic; example.com is reserved for documentation)",
+    "PHONE": "555-0142 (the 555 exchange is reserved for fiction)"
+  }
+}

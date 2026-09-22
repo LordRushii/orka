@@ -1,0 +1,15 @@
+{
+  "source": "synthetic",
+  "width": 1280,
+  "height": 800,
+  "regions": [
+    {
+      "category": "FACE",
+      "box": { "x": 900, "y": 120, "width": 140, "height": 160 },
+      "note": "A skin-tone rectangle standing in for a portrait. The face detector runs on pixels; ground truth is the painted region the synthetic detector reports."
+    }
+  ],
+  "documentedText": {
+    "FACE": "Painted portrait block at (900,120) 140x160; no photograph exists -- the fixture is fully synthetic"
+  }
+}

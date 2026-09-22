@@ -1,0 +1,20 @@
+{
+  "source": "synthetic",
+  "width": 1920,
+  "height": 1080,
+  "regions": [
+    {
+      "category": "EMAIL",
+      "box": { "x": 120, "y": 140, "width": 460, "height": 32 },
+      "note": "Large heading text in the page body. Resolvable by the full-image pass even after the detector's downsample to the input budget."
+    },
+    {
+      "category": "EMAIL",
+      "box": { "x": 1430, "y": 815, "width": 180, "height": 10 },
+      "note": "Text baked into a small embedded thumbnail. THIS is the case the tiled OCR pass exists for: the full-image pass downsamples it below resolvable size, so only the native-resolution tile pass can find it. If the tile budget drops, this recall figure is what goes red."
+    }
+  ],
+  "documentedText": {
+    "EMAIL": "jane.doe@example.com (synthetic), painted once at heading size and once as thumbnail text"
+  }
+}

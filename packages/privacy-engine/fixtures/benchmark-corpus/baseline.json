@@ -1,0 +1,14 @@
+{
+  "source": "generated from the first full run of benchmarkCorpus.test.ts; ratchet up deliberately, never down silently",
+  "overall": {
+    "recall": 1.0,
+    "precision": 1.0,
+    "redactionCoverage": 1.0
+  },
+  "byCategory": {
+    "002-embedded-image-text": {
+      "recall": 1.0,
+      "note": "Both the heading email and the thumbnail email must be found; this fixture is the guard on the tile budget."
+    }
+  }
+}

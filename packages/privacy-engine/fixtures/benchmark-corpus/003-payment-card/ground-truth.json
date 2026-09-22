@@ -1,0 +1,15 @@
+{
+  "source": "synthetic",
+  "width": 1280,
+  "height": 800,
+  "regions": [
+    {
+      "category": "CARD",
+      "box": { "x": 120, "y": 300, "width": 262, "height": 24 },
+      "note": "A Luhn-valid 16-digit card number rendered as payment-helper text. The detector requires the Luhn check, so the digits are 4111 1111 1111 1111 (the canonical synthetic test card)."
+    }
+  ],
+  "documentedText": {
+    "CARD": "4111 1111 1111 1111 (the standard synthetic test PAN; passes Luhn, owned by no one)"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "source": "synthetic",
+  "width": 1280,
+  "height": 800,
+  "regions": [
+    {
+      "category": "PASSWORD_FIELD",
+      "box": { "x": 120, "y": 380, "width": 260, "height": 30 },
+      "note": "A form input whose snapshot hints declare inputType 'password'. Detected from the DOM, not pixels: the box is the element's own."
+    }
+  ],
+  "documentedText": {
+    "PASSWORD_FIELD": "Element 'signup-password', role textbox, sensitivity hint inputType=password"
+  }
+}

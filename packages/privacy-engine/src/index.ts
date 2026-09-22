@@ -31,3 +31,4 @@ export type { ImageEncoder } from "./encoder";
 export * from "./pixel";
 export { sanitize, createPrivacyEngine, type SanitizeDependencies } from "./sanitize";
 export { ModelLoadFailedError } from "./sanitize";
+export { scoreDetections, MATCH_IOU, type CorpusScores, type GroundTruthRegion } from "./benchmark/score";
