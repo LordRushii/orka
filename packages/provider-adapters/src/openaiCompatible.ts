@@ -79,24 +79,26 @@ export function createOpenAiCompatibleAdapter(
     async plan(input: PlannerInput, signal: AbortSignal): Promise<ProviderResult> {
       const model = input.model ?? options.defaultModel;
       const { observation } = input;
+      // A snapshot-only round carries no image, so the request is text-only:
+      // the provider is asked to decide from the element list alone.
+      const userContent: Record<string, unknown>[] = [
+        { type: "text", text: buildPlannerUserText(observation) },
+      ];
+      if (observation.screenshot) {
+        userContent.push({
+          type: "image_url",
+          image_url: {
+            url: `data:${observation.screenshot.mimeType};base64,${observation.screenshot.dataBase64}`,
+          },
+        });
+      }
       const body: Record<string, unknown> = {
         model,
         temperature: 0,
         max_tokens: options.maxTokens ?? 1200,
         messages: [
           { role: "system", content: PLANNER_SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: buildPlannerUserText(observation) },
-              {
-                type: "image_url",
-                image_url: {
-                  url: `data:${observation.screenshot.mimeType};base64,${observation.screenshot.dataBase64}`,
-                },
-              },
-            ],
-          },
+          { role: "user", content: userContent },
         ],
       };
       if (options.jsonMode) body.response_format = { type: "json_object" };

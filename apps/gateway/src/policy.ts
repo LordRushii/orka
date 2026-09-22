@@ -77,7 +77,10 @@ export function applyRequestPolicy(body: unknown): PolicyResult {
     );
   }
 
-  if (parsed.data.observation.screenshot.dataBase64.length > MAX_SCREENSHOT_BASE64_CHARS) {
+  // A snapshot-only round (Phase 6.5) sends no image, so there is no size to
+  // check -- and its absence is a smaller payload, not a rejected one.
+  const screenshot = parsed.data.observation.screenshot;
+  if (screenshot && screenshot.dataBase64.length > MAX_SCREENSHOT_BASE64_CHARS) {
     return reject(
       413,
       safeError("PAYLOAD_TOO_LARGE", "The sanitized screenshot exceeds the gateway image limit."),

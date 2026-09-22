@@ -107,6 +107,68 @@ describe("sanitize", () => {
     expect(result.localAudit.redactionMap).toHaveLength(2);
   });
 
+  test("a snapshot-only capture runs no pixel detector and carries no screenshot", async () => {
+    let ocrCalls = 0;
+    let faceCalls = 0;
+    const input = baseInput({
+      screenshot: undefined,
+      snapshot: {
+        elements: [
+          {
+            id: "pw",
+            role: "textbox",
+            accessibleName: "Password",
+            box: { x: 0, y: 0, width: 10, height: 10 },
+            capabilities: ["type"],
+            sensitivity: { inputType: "password" },
+          },
+        ],
+        textNodes: [
+          { id: "t1", text: `Email: ${SAMPLE_EMAIL}`, box: { x: 0, y: 10, width: 30, height: 10 } },
+        ],
+      },
+    });
+    const result = await sanitize(
+      input,
+      PROFILE,
+      baseDeps({
+        textRecognizer: {
+          recognize: async () => {
+            ocrCalls += 1;
+            return [];
+          },
+        },
+        faceDetector: {
+          detect: async () => {
+            faceCalls += 1;
+            return [];
+          },
+        },
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // No pixels captured means no pixel work at all -- not a degraded scan.
+    expect(ocrCalls).toBe(0);
+    expect(faceCalls).toBe(0);
+    expect("screenshot" in result.observation).toBe(false);
+    // The deterministic DOM detectors still ran before anything was built.
+    const categories = result.observation.redactionSummary.map((entry) => entry.category).sort();
+    expect(categories).toEqual(["EMAIL", "PASSWORD_FIELD"]);
+    expect(result.localAudit.originalScreenshot).toBeUndefined();
+  });
+
+  test("a present but malformed capture is still refused, never treated as snapshot-only", async () => {
+    // The presence of the field is the gate: a caller cannot smuggle a bad
+    // capture past validation by leaving it empty-but-present.
+    const input = baseInput({ screenshot: { width: 0, height: 0, data: new Uint8ClampedArray(0) } });
+    const result = await sanitize(input, PROFILE, baseDeps());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("CAPTURE_FAILED");
+  });
+
   test("redacts a PII value pasted directly into the task text", async () => {
     const input = baseInput({ task: `Log in with ${SAMPLE_EMAIL} please` });
     const result = await sanitize(input, PROFILE, baseDeps());

@@ -227,6 +227,33 @@ describe("outbound request capture: only sanitized data leaves the gateway", () 
     expect(body.system).toBeString();
   });
 
+  test("a snapshot-only round is a text-only request, with no image block", async () => {
+    const { calls, fetchImpl } = recordingFetch([() => chatCompletion(MOCK_FIXTURES["valid-plan"])]);
+    await openAi(fetchImpl).plan({ observation: observation({ screenshot: undefined }) }, live);
+
+    const body = bodyOf(calls[0]!);
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain(REDACTED_IMAGE_B64);
+    expect(serialized).not.toContain("image_url");
+    // The prompt says so explicitly, so the model does not describe a page it
+    // was never shown.
+    expect(serialized).toContain("SCREENSHOT: absent");
+  });
+
+  test("the Anthropic snapshot-only request is text-only too", async () => {
+    const { calls, fetchImpl } = recordingFetch([
+      () => jsonResponse({ content: [{ type: "text", text: MOCK_FIXTURES["valid-plan"] }] }),
+    ]);
+    const adapter = createAnthropicAdapter({ apiKey: "ant-test-key", fetchImpl });
+    const result = await adapter.plan({ observation: observation({ screenshot: undefined }) }, live);
+    expect(result.ok).toBe(true);
+
+    const serialized = JSON.stringify(bodyOf(calls[0]!));
+    expect(serialized).not.toContain(REDACTED_IMAGE_B64);
+    expect(serialized).not.toContain('"image"');
+    expect(serialized).toContain("SCREENSHOT: absent");
+  });
+
   test("json mode is on for cloud providers and off for LM Studio", async () => {
     const cloud = recordingFetch([() => chatCompletion(MOCK_FIXTURES["valid-plan"])]);
     await createDeepSeekAdapter({ apiKey: "ds-key", fetchImpl: cloud.fetchImpl })

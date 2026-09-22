@@ -44,6 +44,20 @@ export function createAnthropicAdapter(options: AnthropicOptions): ProviderAdapt
     async plan(input: PlannerInput, signal: AbortSignal): Promise<ProviderResult> {
       const model = input.model ?? options.defaultModel ?? ANTHROPIC_DEFAULT_MODEL;
       const { observation } = input;
+      // A snapshot-only round sends text only; the image block exists solely on
+      // a vision round, where the observation actually carries pixels.
+      const content: Record<string, unknown>[] = [];
+      if (observation.screenshot) {
+        content.push({
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: observation.screenshot.mimeType,
+            data: observation.screenshot.dataBase64,
+          },
+        });
+      }
+      content.push({ type: "text", text: buildPlannerUserText(observation) });
       const result = await postJson(
         `${base}/messages`,
         {
@@ -55,22 +69,7 @@ export function createAnthropicAdapter(options: AnthropicOptions): ProviderAdapt
           max_tokens: options.maxTokens ?? 1200,
           temperature: 0,
           system: PLANNER_SYSTEM_PROMPT,
-          messages: [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "image",
-                  source: {
-                    type: "base64",
-                    media_type: observation.screenshot.mimeType,
-                    data: observation.screenshot.dataBase64,
-                  },
-                },
-                { type: "text", text: buildPlannerUserText(observation) },
-              ],
-            },
-          ],
+          messages: [{ role: "user", content }],
         },
         signal,
         fetchImpl,

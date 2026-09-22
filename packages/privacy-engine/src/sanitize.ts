@@ -1,4 +1,8 @@
-import type { SanitizationFailure, SanitizationFailureCode } from "@orka/contracts";
+import type {
+  SanitizationFailure,
+  SanitizationFailureCode,
+  SanitizedScreenshot,
+} from "@orka/contracts";
 import { CONTRACT_VERSION, SanitizedObservationSchema } from "@orka/contracts";
 import { runDomDetectors } from "./detectors";
 import type { ImageEncoder } from "./encoder";
@@ -16,6 +20,7 @@ import type {
   Detection,
   LocalAudit,
   PrivacyEngine,
+  RasterImage,
   RuntimeProfile,
   SanitizationResult,
 } from "./types";
@@ -83,9 +88,8 @@ function classifyDetectorError(label: string, error: unknown): SanitizationStage
   return new SanitizationStageError("DETECTOR_ERROR", message);
 }
 
-function isValidScreenshot(input: CaptureInput): boolean {
-  const { screenshot } = input;
-  if (!screenshot || screenshot.width <= 0 || screenshot.height <= 0) return false;
+function isValidScreenshot(screenshot: RasterImage): boolean {
+  if (screenshot.width <= 0 || screenshot.height <= 0) return false;
   const expectedLength = screenshot.width * screenshot.height * 4;
   return screenshot.data.length === expectedLength;
 }
@@ -102,7 +106,13 @@ export async function sanitize(
   deps: SanitizeDependencies,
 ): Promise<SanitizationResult> {
   try {
-    if (!isValidScreenshot(input)) {
+    // The presence of the capture itself is the gate (Phase 6.5). A round that
+    // captured no pixels is a snapshot-only round, not a failure; a round that
+    // *did* capture is still validated, so a present-but-malformed capture is
+    // refused rather than silently skipped. No caller-set flag can downgrade a
+    // vision round into a text-only one.
+    const screenshot = input.screenshot;
+    if (screenshot && !isValidScreenshot(screenshot)) {
       return { ok: false, error: failure("CAPTURE_FAILED", "Captured screenshot is missing or malformed.") };
     }
 
@@ -118,56 +128,68 @@ export async function sanitize(
 
     const domDetections = runDomDetectors(input.snapshot);
 
-    let ocrDetections: Detection[];
-    try {
-      ocrDetections = await withTimeout(
-        runOcrDetection(deps.textRecognizer, input.screenshot, {
-          // The runtime profile decides how much of the capture is re-read at
-          // native resolution; see PIXEL_SCAN_POLICY.
-          tiling: deps.ocrTiling ?? pixelScanBudget(profile.mode),
-        }),
-        deps.ocrTimeoutMs ?? DEFAULT_OCR_TIMEOUT_MS,
-        "OCR detection",
-      );
-    } catch (error) {
-      const stageError = classifyDetectorError("OCR detection", error);
-      return { ok: false, error: failure(stageError.code, stageError.message) };
-    }
+    // OCR and face detection read captured pixels; a snapshot-only round has
+    // none, so it never invokes them. The deterministic DOM detectors above
+    // still run, so dropping the capture removes work, not redaction.
+    const ocrDetections: Detection[] = [];
+    const faceDetections: Detection[] = [];
+    if (screenshot) {
+      try {
+        ocrDetections.push(
+          ...(await withTimeout(
+            runOcrDetection(deps.textRecognizer, screenshot, {
+              // The runtime profile decides how much of the capture is re-read
+              // at native resolution; see PIXEL_SCAN_POLICY.
+              tiling: deps.ocrTiling ?? pixelScanBudget(profile.mode),
+            }),
+            deps.ocrTimeoutMs ?? DEFAULT_OCR_TIMEOUT_MS,
+            "OCR detection",
+          )),
+        );
+      } catch (error) {
+        const stageError = classifyDetectorError("OCR detection", error);
+        return { ok: false, error: failure(stageError.code, stageError.message) };
+      }
 
-    let faceDetections: Detection[];
-    try {
-      faceDetections = await withTimeout(
-        runFaceDetection(deps.faceDetector, input.screenshot),
-        deps.faceTimeoutMs ?? DEFAULT_FACE_TIMEOUT_MS,
-        "Face detection",
-      );
-    } catch (error) {
-      const stageError = classifyDetectorError("Face detection", error);
-      return { ok: false, error: failure(stageError.code, stageError.message) };
+      try {
+        faceDetections.push(
+          ...(await withTimeout(
+            runFaceDetection(deps.faceDetector, screenshot),
+            deps.faceTimeoutMs ?? DEFAULT_FACE_TIMEOUT_MS,
+            "Face detection",
+          )),
+        );
+      } catch (error) {
+        const stageError = classifyDetectorError("Face detection", error);
+        return { ok: false, error: failure(stageError.code, stageError.message) };
+      }
     }
 
     const allDetections = [...domDetections, ...ocrDetections, ...faceDetections];
 
+    // Snapshot boxes are already in viewport space when there is no image to
+    // scale them into, so a snapshot-only round merges against viewport bounds.
+    const bounds = screenshot
+      ? { width: screenshot.width, height: screenshot.height }
+      : { width: input.viewport.width, height: input.viewport.height };
+
     let redactionMap;
-    let redactedRaster;
     let redactedAccessibility;
+    let redactedScreenshot: SanitizedScreenshot | undefined;
     try {
-      redactionMap = mergeDetections(allDetections, {
-        width: input.screenshot.width,
-        height: input.screenshot.height,
-      });
-      redactedRaster = redactScreenshot(input.screenshot, redactionMap);
+      redactionMap = mergeDetections(allDetections, bounds);
       redactedAccessibility = redactAccessibilitySnapshot(input.snapshot.elements, redactionMap);
+      if (screenshot) {
+        const encoded = await deps.encoder.encode(redactScreenshot(screenshot, redactionMap));
+        redactedScreenshot = {
+          mimeType: encoded.mimeType,
+          width: screenshot.width,
+          height: screenshot.height,
+          dataBase64: encoded.dataBase64,
+        };
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Merging detections failed.";
-      return { ok: false, error: failure("MERGE_FAILED", message) };
-    }
-
-    let encoded;
-    try {
-      encoded = await deps.encoder.encode(redactedRaster);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Encoding the redacted screenshot failed.";
       return { ok: false, error: failure("MERGE_FAILED", message) };
     }
 
@@ -177,12 +199,7 @@ export async function sanitize(
       taskId: input.taskId,
       task: redactTaskText(input.task),
       urlOrigin,
-      screenshot: {
-        mimeType: encoded.mimeType,
-        width: redactedRaster.width,
-        height: redactedRaster.height,
-        dataBase64: encoded.dataBase64,
-      },
+      ...(redactedScreenshot ? { screenshot: redactedScreenshot } : {}),
       accessibilitySnapshot: redactedAccessibility,
       redactionSummary: summarizeRedactions(redactionMap),
       priorActions: input.priorActions ?? [],
@@ -202,7 +219,7 @@ export async function sanitize(
 
     const localAudit: LocalAudit = {
       taskId: input.taskId,
-      originalScreenshot: input.screenshot,
+      ...(screenshot ? { originalScreenshot: screenshot } : {}),
       redactionMap,
       detections: allDetections,
       createdAt: now(),

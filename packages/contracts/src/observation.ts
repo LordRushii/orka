@@ -117,7 +117,13 @@ export const SanitizedObservationSchema = z
     taskId: z.string().min(1).max(64),
     task: z.string().min(1).max(2000),
     urlOrigin: OriginSchema,
-    screenshot: SanitizedScreenshotSchema,
+    /**
+     * Present on a vision round only (Phase 6.5). A snapshot-decidable round
+     * carries no pixels at all: the observation is the redacted accessibility
+     * snapshot, and the planner answers from element names alone. No field is
+     * weakened by its absence -- there is simply nothing captured to redact.
+     */
+    screenshot: SanitizedScreenshotSchema.optional(),
     accessibilitySnapshot: z.array(AccessibilityNodeSchema).max(500),
     redactionSummary: z.array(RedactionSummaryEntrySchema).max(50),
     priorActions: z.array(PriorActionSummarySchema).max(10),

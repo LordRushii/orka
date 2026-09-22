@@ -76,7 +76,12 @@ export type CaptureInput = {
   url: string;
   viewport: Viewport;
   capturedAt: number;
-  screenshot: RasterImage;
+  /**
+   * The raw viewport capture. Absent on a snapshot-only round (Phase 6.5):
+   * `sanitize` then skips OCR and face detection entirely rather than treating
+   * a missing capture as an error, because there are no pixels to scan.
+   */
+  screenshot?: RasterImage;
   snapshot: SafePageSnapshot;
   priorActions?: PriorActionSummary[];
 };
@@ -122,7 +127,8 @@ export type RuntimeProfile = {
  */
 export type LocalAudit = {
   taskId: string;
-  originalScreenshot: RasterImage;
+  /** Absent on a snapshot-only round, where no pixels were ever captured. */
+  originalScreenshot?: RasterImage;
   redactionMap: RedactionMap;
   detections: Detection[];
   createdAt: number;
