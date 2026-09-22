@@ -236,9 +236,11 @@ more often.
 Both are product/security decisions, not implementation details, which is why they're called out
 separately from §5 rather than folded into a phase's task list.
 
-**Resolved:** both decisions have been made and turned into an ordered execution plan in
-[docs/V2-EXECUTION-PROMPT.md](V2-EXECUTION-PROMPT.md) — see its §1. Phase 6/9 implementation should
-follow that document, not re-litigate these decisions.
+**Resolved:** both decisions have been made. Decision 1 (a per-round budget plus a round count cap)
+and Decision 2 (opt-in message drafting) are recorded in
+[docs2/04-PRODUCT-PRD.md](04-PRODUCT-PRD.md) §4 and §5, and operationalized by the phase briefs in
+[phases2/](../phases2/README.md). Phase 6/9 implementation follows those, not re-litigate these
+decisions.
 
 ## 8. Proposed phase breakdown
 

@@ -15,7 +15,7 @@ to touch; the **Acceptance** section is how it knows it's done.
 
 - [docs2/04-PRODUCT-PRD.md](../docs2/04-PRODUCT-PRD.md) — what the product does end to end
 - [docs2/05-BUILD-ORDER.md](../docs2/05-BUILD-ORDER.md) — task-by-task order (these phase files expand it)
-- [docs/V2-PLAN.md](../docs/V2-PLAN.md) — the "why"; [docs/V2-EXECUTION-PROMPT.md](../docs/V2-EXECUTION-PROMPT.md) — resolved decisions
+- [docs/V2-PLAN.md](../docs/V2-PLAN.md) — the "why"; [docs2/04-PRODUCT-PRD.md](../docs2/04-PRODUCT-PRD.md) — the resolved scope decisions (per-round budget, opt-in messaging)
 - [docs/SECURITY-PRIVACY.md](../docs/SECURITY-PRIVACY.md), [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md), [docs/PRD.md](../docs/PRD.md) — the invariants no phase may break
 
 ## The phases

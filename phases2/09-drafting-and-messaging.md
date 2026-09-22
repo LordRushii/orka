@@ -10,7 +10,8 @@ explicit confirm.
 ## Docs to read first
 
 - [docs2/04-PRODUCT-PRD.md](../docs2/04-PRODUCT-PRD.md) §5 (messaging) and §1 (reference scenario)
-- [docs/V2-PLAN.md](../docs/V2-PLAN.md) §4 (walked scenario) and §7 item 2; [docs/V2-EXECUTION-PROMPT.md](../docs/V2-EXECUTION-PROMPT.md) §1 Decision 2
+- [docs/V2-PLAN.md](../docs/V2-PLAN.md) §4 (walked scenario) and §7 item 2; Decision 2 (opt-in
+  messaging) is recorded in [docs2/04-PRODUCT-PRD.md](../docs2/04-PRODUCT-PRD.md) §5
 - Current policy/prompt: `apps/extension/shared/executorPolicy.ts` (the `send`/`reply`/`post` confirm),
   `packages/provider-adapters/src/prompt.ts` (the refusal), `apps/extension/shared/settings.ts`
 

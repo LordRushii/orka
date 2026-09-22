@@ -11,7 +11,8 @@ previous one. A single-step task must still complete in one round, indistinguish
 
 - [docs2/05-BUILD-ORDER.md](../docs2/05-BUILD-ORDER.md) §"Phase 6" — the task list this expands
 - [docs2/04-PRODUCT-PRD.md](../docs2/04-PRODUCT-PRD.md) §3 (deltas) and §4 (budgets)
-- [docs/V2-PLAN.md](../docs/V2-PLAN.md) §5.1 (the loop) and [docs/V2-EXECUTION-PROMPT.md](../docs/V2-EXECUTION-PROMPT.md) §1 Decision 1
+- [docs/V2-PLAN.md](../docs/V2-PLAN.md) §5.1 (the loop); Decision 1 (per-round budget + round cap) is
+  recorded in [docs2/04-PRODUCT-PRD.md](../docs2/04-PRODUCT-PRD.md) §4
 - [docs/SECURITY-PRIVACY.md](../docs/SECURITY-PRIVACY.md) — the budget invariant you will change
 
 ## Current state

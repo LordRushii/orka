@@ -28,7 +28,7 @@ packages/
 
 Read [PRD.md](docs/PRD.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [TECH-STACK.md](docs/TECH-STACK.md), and [SECURITY-PRIVACY.md](docs/SECURITY-PRIVACY.md) before implementation. The build order is in [phases](phases/).
 
-V1 (phases 1-5) is complete. The next stage -- a multi-round planning loop, redaction speed/accuracy work, a conversational side panel, and opt-in message drafting -- is designed in [docs/V2-PLAN.md](docs/V2-PLAN.md), with its open scope decisions resolved and turned into an ordered execution plan in [docs/V2-EXECUTION-PROMPT.md](docs/V2-EXECUTION-PROMPT.md).
+V1 (phases 1-5) is complete. The next stage -- a multi-round planning loop, redaction speed/accuracy work, a conversational side panel, and opt-in message drafting -- is designed in [docs/V2-PLAN.md](docs/V2-PLAN.md), with its scope decisions resolved in [docs2/04-PRODUCT-PRD.md](docs2/04-PRODUCT-PRD.md) and turned into an ordered execution plan in the [phases2](phases2/README.md) briefs.
 
 ## Running it locally
 
