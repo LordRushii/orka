@@ -85,6 +85,7 @@ import {
   type TaskLoopPorts,
   type TaskLoopRun,
 } from "../shared/taskLoop.ts";
+import { taskRequiresVision } from "../shared/visionPolicy.ts";
 import { describeModelVersions, summarizeConfidenceBands } from "../shared/localReport.ts";
 import {
   createMetricsRecorder,
@@ -641,12 +642,15 @@ async function runTask(task: ActiveTask): Promise<void> {
     run = await runTaskLoop(
       { session: task.session },
       {
-        scan: (priorActions) => scanRound(task, priorActions),
+        scan: (priorActions, visionRequired) => scanRound(task, priorActions, visionRequired),
         plan: (observation) => planRound(task, observation),
         requestApproval: () => roundApprovalPort(task),
         executeStep: (action) => executeRoundStep(task, action),
         report: (event) => reportLoopEvent(task, event),
       } satisfies TaskLoopPorts,
+      // A request to look at or explain the page is settled before the first
+      // capture; the loop turns vision on later for a step that needs it.
+      { visionRequired: taskRequiresVision(task.task) },
     );
   } catch (error) {
     await failExecution(task, safeErrorMessage(error, "The task could not be completed."));
@@ -827,17 +831,23 @@ function auditView(
   observation: Extract<Awaited<ReturnType<PrivacyEngine["sanitize"]>>, { ok: true }>["observation"],
   originalScreenshot: LocalAuditView["originalScreenshot"],
 ): LocalAuditView {
+  // A snapshot-only round has no pixels on either side of the pair; the panel
+  // says so instead of rendering an empty image.
   return {
     runtime: task.profile,
     confidenceBands: summarizeConfidenceBands(task.audit?.detections ?? []),
     models: describeModelVersions(),
-    originalScreenshot,
-    redactedScreenshot: {
-      mimeType: observation.screenshot.mimeType,
-      width: observation.screenshot.width,
-      height: observation.screenshot.height,
-      dataBase64: observation.screenshot.dataBase64,
-    },
+    ...(originalScreenshot ? { originalScreenshot } : {}),
+    ...(observation.screenshot
+      ? {
+          redactedScreenshot: {
+            mimeType: observation.screenshot.mimeType,
+            width: observation.screenshot.width,
+            height: observation.screenshot.height,
+            dataBase64: observation.screenshot.dataBase64,
+          },
+        }
+      : {}),
     redactionSummary: observation.redactionSummary,
     createdAt: task.audit?.createdAt ?? Date.now(),
   };
@@ -961,26 +971,38 @@ async function planRound(task: ActiveTask, observation: SanitizedObservation): P
  * separately -- the gateway stays stateless.
  *
  * Runs once per round, against the page as the previous step left it.
+ *
+ * `visionRequired` is Phase 6.5's fast path. A snapshot-decidable round reads
+ * the accessibility tree only and calls neither `captureVisibleTab` nor the
+ * local OCR/face scan. A vision round captures exactly as before, and a vision
+ * round whose capture fails fails closed -- it is never silently downgraded to
+ * a text-only round, because the planner asked to see pixels it did not get.
  */
 async function scanRound(
   task: ActiveTask,
   priorActions: PriorActionSummary[],
+  visionRequired: boolean,
 ): Promise<SanitizedObservation> {
   // Capture is one phase of the demo's timeline: everything from the
   // active-tab screenshot to the decoded local bitmap, including the
   // revalidation that has to pass before the page is read at all.
   const { snapshot, captureTab, screenshot } = await task.metrics.measure("capture", async () => {
-    let capture;
-    try {
-      capture = await captureFromAuthority(task.authority, captureBrowser());
-    } catch (error) {
-      if (error instanceof CaptureAuthorityError) {
-        throw new CaptureFlowError("CAPTURE_FAILED", error.message);
+    if (visionRequired) {
+      let capture;
+      try {
+        capture = await captureFromAuthority(task.authority, captureBrowser());
+      } catch (error) {
+        if (error instanceof CaptureAuthorityError) {
+          throw new CaptureFlowError("CAPTURE_FAILED", error.message);
+        }
+        throw error;
       }
-      throw error;
+      task.screenshotDataUrl = capture.screenshotDataUrl;
     }
-    task.screenshotDataUrl = capture.screenshotDataUrl;
     const pageSnapshot = await requestSnapshot(task.authority.tabId, task.taskId);
+    // The capture authority is revalidated on every round, with or without
+    // pixels: the origin/tab checks are what make the capture safe, not the
+    // screenshot itself.
     let tab;
     try {
       tab = await validateCaptureAuthority(task.authority, captureBrowser());
@@ -991,15 +1013,17 @@ async function scanRound(
       throw error;
     }
     let decoded;
-    try {
-      decoded = await decodeCapturedScreenshot(task.screenshotDataUrl);
-    } catch (error) {
-      throw new CaptureFlowError(
-        "CAPTURE_FAILED",
-        safeErrorMessage(error, "The captured screenshot could not be decoded locally."),
-      );
+    if (visionRequired) {
+      try {
+        decoded = await decodeCapturedScreenshot(task.screenshotDataUrl);
+      } catch (error) {
+        throw new CaptureFlowError(
+          "CAPTURE_FAILED",
+          safeErrorMessage(error, "The captured screenshot could not be decoded locally."),
+        );
+      }
+      task.screenshotDataUrl = "";
     }
-    task.screenshotDataUrl = "";
     currentTask(task);
     return { snapshot: pageSnapshot, captureTab: tab, screenshot: decoded };
   });
@@ -1014,8 +1038,14 @@ async function scanRound(
       devicePixelRatio: snapshot.viewport.devicePixelRatio,
     },
     capturedAt: Date.now(),
-    screenshot,
-    snapshot: scaleSnapshot(snapshot.snapshot, snapshot.viewport, screenshot),
+    // Present only on a vision round; the engine gates its pixel detectors on
+    // this field itself, never on a caller-set flag.
+    ...(screenshot ? { screenshot } : {}),
+    // With no image there is nothing to rescale: element boxes are already in
+    // viewport space, so they are handed over unscaled.
+    snapshot: screenshot
+      ? scaleSnapshot(snapshot.snapshot, snapshot.viewport, screenshot)
+      : snapshot.snapshot,
     priorActions,
   };
   const result = await task.metrics.measure("sanitize", () =>
@@ -1032,8 +1062,12 @@ async function scanRound(
   // observation carries, never the map they came from.
   task.metrics.setCategoryCounts(result.observation.redactionSummary);
 
-  const encoder = createBrowserImageEncoder();
-  const originalScreenshot = await encodeForLocalAudit(encoder, result.localAudit.originalScreenshot);
+  // Snapshot-only rounds captured no pixels, so there is no original frame to
+  // preview; the audit still reports the DOM detections that did run.
+  const original = result.localAudit.originalScreenshot;
+  const originalScreenshot = original
+    ? await encodeForLocalAudit(createBrowserImageEncoder(), original)
+    : undefined;
   task.audit = result.localAudit;
   if (!task.session.can("SANITIZED")) {
     // The session was stopped, timed out, or replaced while this scan was still

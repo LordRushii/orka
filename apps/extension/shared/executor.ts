@@ -127,6 +127,13 @@ export type ExecutionRun = {
 export type StepRun = {
   status: ExecutionRunStatus;
   needsReplan: boolean;
+  /**
+   * The step failed because the plan cited a target the snapshot could not
+   * place on the page, and this round had no screenshot to fall back on
+   * (Phase 6.5). The loop answers by re-capturing *with* pixels and re-planning
+   * once, rather than reporting a failure the user cannot act on.
+   */
+  needsVision?: boolean;
   /** The single step's outcome, whose reason is safe to show the user. */
   outcome?: ActionOutcome;
   stopReason?: StopReason;
@@ -198,6 +205,21 @@ export type ActionExecutor = {
   executeStep(action: Action, context: ExecutionContext): Promise<StepRun>;
   stop(reason: StopReason): void;
 };
+
+/**
+ * Target-resolution outcomes where re-reading the page *with a screenshot*
+ * could plausibly change the answer: the element is not where the plan said,
+ * is not visible, or could not be told apart from its neighbours. Outcomes the
+ * pixels cannot fix (a disabled control, invented evidence) are deliberately
+ * absent -- those are genuine refusals, not a missing view. Phase 6.5 uses
+ * this to decide whether a snapshot-only round deserves one vision retry.
+ */
+export const VISION_FALLBACK_OUTCOME_CODES: readonly ExecutionOutcomeCode[] = [
+  "TARGET_NOT_FOUND",
+  "TARGET_NOT_VISIBLE",
+  "TARGET_DRIFTED",
+  "TARGET_AMBIGUOUS",
+];
 
 /** How far a `scroll` action moves when the plan does not say. */
 export const DEFAULT_SCROLL_AMOUNT = 600;
@@ -823,9 +845,20 @@ export function createActionExecutor(deps: ExecutorDeps): ActionExecutor {
         context,
       );
       const outcome = run.outcomes[0];
+      // A snapshot-only round that could not place its target gets one retry
+      // with pixels: the planner was answering without ever having seen the
+      // page. A round that already had a screenshot is never retried on this
+      // basis, so a genuinely unresolvable target still fails, once.
+      const outcomeCode = outcome?.code;
+      const needsVision =
+        run.status === "failed" &&
+        context.observation.screenshot === undefined &&
+        outcomeCode !== undefined &&
+        VISION_FALLBACK_OUTCOME_CODES.includes(outcomeCode);
       return {
         status: run.status,
         needsReplan: run.status === "completed" && action.type !== "done",
+        ...(needsVision ? { needsVision } : {}),
         ...(outcome ? { outcome } : {}),
         ...(run.stopReason !== undefined ? { stopReason: run.stopReason } : {}),
         ...(run.failure !== undefined ? { failure: run.failure } : {}),

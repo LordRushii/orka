@@ -24,8 +24,15 @@ export type TaskLoopPorts = {
   /**
    * Capture + sanitize what the page looks like *now*, with `priorActions`
    * (what already happened) folded into the observation. Fails closed.
+   *
+   * `visionRequired` (Phase 6.5) says whether this round must capture pixels.
+   * The default round is snapshot-only; the port decides *how* to capture, but
+   * never downgrades a required vision round to text-only.
    */
-  scan(priorActions: PriorActionSummary[]): Promise<SanitizedObservation>;
+  scan(
+    priorActions: PriorActionSummary[],
+    visionRequired: boolean,
+  ): Promise<SanitizedObservation>;
   /** Ask the planner for one step against the (redacted) observation. */
   plan(observation: SanitizedObservation): Promise<Action>;
   /** The user's decision on the round's proposed step. */
@@ -42,6 +49,15 @@ export type TaskLoopEvent =
 
 /** What one executed step handed back to the loop: see executor.ts. */
 export type { StepRun };
+
+export type TaskLoopOptions = {
+  /**
+   * Whether the first round needs a screenshot. Set from the task itself: a
+   * request to explain or look at the page is settled before the loop starts.
+   * A later round can still switch vision on (see `StepRun.needsVision`).
+   */
+  visionRequired?: boolean;
+};
 
 export type TaskLoopRun = {
   status: "completed" | "stopped" | "failed";
@@ -70,11 +86,16 @@ function summarize(run: StepRun): string {
 export async function runTaskLoop(
   task: { session: TaskSession },
   ports: TaskLoopPorts,
+  options: TaskLoopOptions = {},
 ): Promise<TaskLoopRun> {
   const { session } = task;
   const priorActions: PriorActionSummary[] = [];
   let rounds = 0;
   let lastSummary = "Nothing to run.";
+  // Snapshot-only until something demands pixels. Once a round needs vision it
+  // stays on for the rest of the session: the page is the same page, and a
+  // planner that needed to see it once will need to see it again.
+  let visionRequired = options.visionRequired ?? false;
 
   while (true) {
     // Round guard before each capture: increments the count and auto-stops the
@@ -94,7 +115,7 @@ export async function runTaskLoop(
 
     let observation: SanitizedObservation;
     try {
-      observation = await ports.scan(priorActions);
+      observation = await ports.scan(priorActions, visionRequired);
     } catch {
       // Fail closed: a scan that cannot complete never reaches the planner. A
       // session that was stopped while the scan ran is a stop, not a failure.
@@ -167,6 +188,24 @@ export async function runTaskLoop(
         priorActions,
         rounds,
       };
+    }
+
+    // The step failed only because this round had no pixels to resolve its
+    // target: re-observe with a screenshot and plan again. The failed attempt
+    // is remembered, so the fresh plan sees what did not work. At most one such
+    // switch per session, so a page that genuinely cannot be acted on still
+    // fails instead of looping; the round cap bounds the retry either way.
+    if (run.needsVision === true && !visionRequired) {
+      priorActions.push({ type: action.type, outcome: "failure", summary: summarize(run) });
+      if (priorActions.length > MAX_PRIOR_ACTIONS) priorActions.shift();
+      visionRequired = true;
+      if (session.can("NEXT_ROUND")) {
+        session.send("NEXT_ROUND");
+        continue;
+      }
+      if (activeTaskGone(session)) {
+        return { status: "stopped", stopReason: "user", summary: run.summary, priorActions, rounds };
+      }
     }
 
     return { status: "failed", summary: run.summary, priorActions, rounds };

@@ -42,17 +42,19 @@ The project uses deep modules: callers use small, stable interfaces while the co
 
 ## On-device privacy pipeline
 
-1. Capture a screenshot with `activeTab` permission and collect only rendered/interactable accessibility data.
-2. Scan text/attributes locally: form semantics, regexes, and local classifiers identify password, email, phone, Aadhaar, PAN, and card values.
-3. Run local OCR in a Worker for text rendered as pixels/canvas; run local face detection for images/video.
-4. Merge overlapping detections into a `RedactionMap`; increase padding around uncertain regions.
-5. Replace detected pixels with opaque category placeholders and redact corresponding textual values.
+1. Collect rendered/interactable accessibility data with `activeTab` permission. A round captures a
+   screenshot only when it needs one (an "explain / describe / what is visible" task, or a step whose
+   target the snapshot could not resolve); the default round reads the accessibility tree alone.
+2. Scan text/attributes locally: form semantics, regexes, and local classifiers identify password, email, phone, Aadhaar, PAN, and card values. These DOM detectors run on every round.
+3. Only when a screenshot was captured: run local OCR in a Worker for text rendered as pixels/canvas, and local face detection for images/video.
+4. Merge overlapping detections into a `RedactionMap`; increase padding around uncertain regions. A snapshot-only round merges against the viewport bounds, since its boxes are already in viewport space.
+5. Replace detected pixels with opaque category placeholders and redact corresponding textual values. With no capture there are no pixels to replace, and the textual redaction is unchanged.
 6. Create the size-capped `SanitizedObservation`; keep the detailed local map only in memory.
-7. If a required detector errors, times out, or is below its confidence policy, fail closed and do not call the gateway.
+7. If a required detector errors, times out, or is below its confidence policy, fail closed and do not call the gateway. A screenshot-bearing round that cannot be captured fails closed too, rather than silently proceeding without the pixels it asked for.
 
 ## Planner protocol
 
-`SanitizedObservation` contains: redacted task text, sanitized screenshot, sanitized visible accessibility snapshot, coarse redaction categories/locations when needed, current URL origin (not query string), and prior approved action summaries.
+`SanitizedObservation` contains: redacted task text, a sanitized visible accessibility snapshot, a sanitized screenshot **on vision rounds only**, coarse redaction categories/locations when needed, current URL origin (not query string), and prior approved action summaries. A snapshot-only observation simply carries no screenshot field; every adapter sends it as a text-only planner request, and the gateway's image-size check is skipped because there is no image.
 
 `ActionPlan v1` contains: `navigate`, `click`, `scroll`, `type`, `select`, `ask_user`, or `done`; every action includes a reason, risk, and semantic target evidence. The gateway rejects prose-only or invalid output. The extension rejects actions whose live DOM target does not match the claimed role, accessible name, and bounding box.
 
@@ -83,8 +85,14 @@ A target cited by a redaction placeholder (`[PHONE]`) is matched by role and box
 page necessarily still carries the real name.
 - **Bounded scope**: one active tab, no hidden or background-tab action, at most 6 rounds with at
 most 90 seconds of active work each (approval time excluded), and no automatic cross-origin
-continuation. Each round captures the page, plans exactly one step, waits for approval, and runs
-that one step; the next round re-captures before it plans.
+continuation. Each round reads the page (snapshot only by default; see the vision-free fast path
+below), plans exactly one step, waits for approval, and runs that one step; the next round
+re-reads the page before it plans.
+- **Vision-free fast path**: a round is snapshot-only unless the task asks the page to be seen or a
+snapshot-only step could not resolve its target. Skipping the capture removes the local OCR and
+face scan for that round. One such failure may switch the rest of the session to vision rounds
+(`StepRun.needsVision`), which the loop answers by re-observing with pixels and re-planning once;
+a vision round that fails is not retried on that basis, so an unresolvable target still fails.
 
 Sensitive Values stay local throughout. A plan may name one by bracket (`[PHONE_1]`); the executor
 resolves it in memory right before the keystroke, only after the user confirms that variable by name,

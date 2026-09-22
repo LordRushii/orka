@@ -28,13 +28,17 @@ const ORIGIN = "https://example.com";
 function observation(
   priorActions: PriorActionSummary[],
   label: string,
+  vision = true,
 ): SanitizedObservation {
   return {
     contractVersion: CONTRACT_VERSION,
     taskId: TASK_ID,
     task: "Choose the Business plan, then enter 12 seats.",
     urlOrigin: ORIGIN,
-    screenshot: { mimeType: "image/png", width: 1280, height: 800, dataBase64: "AAAA" },
+    // A snapshot-only round carries no pixels at all (Phase 6.5).
+    ...(vision
+      ? { screenshot: { mimeType: "image/png" as const, width: 1280, height: 800, dataBase64: "AAAA" } }
+      : {}),
     // The element the planner may cite changes per round: round 1 only sees the
     // plan select; round 2 sees the seat field the select revealed. A plan that
     // ran against round 1's element list could not cite round 2's field at all.
@@ -92,6 +96,8 @@ type HarnessOptions = {
   plans: Action[];
   decisions?: ApprovalDecision[];
   maxRounds?: number;
+  /** Initial vision setting for round 1; later rounds are the loop's call. */
+  visionRequired?: boolean;
   /** Called with each round's number just before that round's capture. */
   onScan?: (round: number, session: TaskSession) => void;
   executeStep?: (action: Action, session: TaskSession) => StepRun;
@@ -104,6 +110,8 @@ function harness(options: HarnessOptions) {
   session.send("START_SCAN");
 
   const scans: PriorActionSummary[][] = [];
+  /** Whether each round captured pixels; the whole point of Phase 6.5. */
+  const visions: boolean[] = [];
   const plannedAgainst: PriorActionSummary[][] = [];
   const executed: Action[] = [];
   const reports: TaskLoopEvent[] = [];
@@ -111,16 +119,17 @@ function harness(options: HarnessOptions) {
   let decisionIndex = 0;
 
   const ports: TaskLoopPorts = {
-    async scan(priorActions) {
+    async scan(priorActions, visionRequired) {
       const round = scans.length + 1;
       // Snapshotted: the loop reuses one growing array, and the test wants to
       // see what each round's capture actually carried.
       scans.push([...priorActions]);
+      visions.push(visionRequired);
       options.onScan?.(round, session);
       // A capture that lands after the session ended can never be planned on.
       if (!session.can("SANITIZED")) throw new Error("session ended during the round");
       session.send("SANITIZED");
-      return observation(priorActions, `round-${round}`);
+      return observation(priorActions, `round-${round}`, visionRequired);
     },
 
     async plan(observation) {
@@ -157,7 +166,7 @@ function harness(options: HarnessOptions) {
     },
   };
 
-  return { session, ports, scans, plannedAgainst, executed, reports };
+  return { session, ports, scans, visions, plannedAgainst, executed, reports };
 }
 
 /* ---------------------------------- tests --------------------------------- */
@@ -290,6 +299,86 @@ describe("task loop: limits and stopping", () => {
       }),
     });
     const run = await runTaskLoop({ session: h.session }, h.ports);
+
+    expect(run.status).toBe("failed");
+    expect(h.scans).toHaveLength(1);
+  });
+});
+
+describe("task loop: the vision-free fast path (Phase 6.5)", () => {
+  test("rounds capture no pixels by default, and each observation carries none", async () => {
+    const h = harness({ plans: [SELECT_BUSINESS, TYPE_SEATS, DONE] });
+    const run = await runTaskLoop({ session: h.session }, h.ports);
+
+    expect(run.status).toBe("completed");
+    // Neither the first round nor any later one asked for a screenshot.
+    expect(h.visions).toEqual([false, false, false]);
+    expect(h.plannedAgainst).toHaveLength(3);
+  });
+
+  test("a task that must be looked at starts on a vision round", async () => {
+    const h = harness({ plans: [DONE], visionRequired: true });
+    await runTaskLoop({ session: h.session }, h.ports, { visionRequired: true });
+
+    expect(h.visions).toEqual([true]);
+  });
+
+  test("a snapshot round that cannot place its target retries once with pixels", async () => {
+    // Round 1 runs against the element list alone and cannot resolve the
+    // target; round 2 sees the page and finishes.
+    const h = harness({
+      plans: [SELECT_BUSINESS, DONE],
+      executeStep: (action) => {
+        if (action === SELECT_BUSINESS && h.visions.length === 1) {
+          return {
+            status: "failed",
+            needsReplan: false,
+            needsVision: true,
+            outcome: {
+              taskId: TASK_ID,
+              actionIndex: 0,
+              status: "failure",
+              code: "TARGET_NOT_FOUND",
+              reason: "No element on this page is combobox \"round-1\".",
+            },
+            summary: "No element on this page is combobox \"round-1\".",
+          };
+        }
+        return {
+          status: "completed",
+          needsReplan: action.type !== "done",
+          outcome: { taskId: TASK_ID, actionIndex: 0, status: "success" },
+          summary: action.type === "done" ? action.summary : `Ran the ${action.type} step.`,
+        };
+      },
+    });
+
+    const run = await runTaskLoop({ session: h.session }, h.ports);
+
+    expect(run.status).toBe("completed");
+    // Round 1 was snapshot-only, the retry was not.
+    expect(h.visions).toEqual([false, true]);
+    // The failed attempt is in the history the retry's planner sees, so it can
+    // try a different approach instead of repeating itself.
+    expect(h.scans[1]).toHaveLength(1);
+    expect(h.scans[1]![0]).toMatchObject({ outcome: "failure" });
+    expect(run.rounds).toBe(2);
+  });
+
+  test("a vision round never retries on the same failure, so a dead target still fails", async () => {
+    const h = harness({
+      plans: [SELECT_BUSINESS, TYPE_SEATS],
+      visionRequired: true,
+      executeStep: () => ({
+        status: "failed",
+        needsReplan: false,
+        needsVision: true,
+        failure: { code: "TARGET_NOT_FOUND", message: "The control is gone." },
+        summary: "The control is gone.",
+      }),
+    });
+
+    const run = await runTaskLoop({ session: h.session }, h.ports, { visionRequired: true });
 
     expect(run.status).toBe("failed");
     expect(h.scans).toHaveLength(1);

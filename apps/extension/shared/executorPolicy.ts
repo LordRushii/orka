@@ -168,15 +168,18 @@ export function boxMatches(expected: Box, actual: Box): boolean {
  * executor performed itself moves everything on the page, so the offset it
  * introduced is subtracted back out. Without both corrections a plan would
  * refuse every target on any scaled display or after its own scroll.
+ *
+ * A snapshot-only round (Phase 6.5) has no image, so there is nothing to
+ * rescale: its boxes are already in viewport space and the scale is 1.
  */
 export function toViewportBox(
   box: Box,
-  screenshot: { width: number; height: number },
+  screenshot: { width: number; height: number } | undefined,
   viewport: { width: number; height: number },
   scroll: { x: number; y: number },
 ): Box {
-  const scaleX = screenshot.width > 0 ? viewport.width / screenshot.width : 1;
-  const scaleY = screenshot.height > 0 ? viewport.height / screenshot.height : 1;
+  const scaleX = screenshot && screenshot.width > 0 ? viewport.width / screenshot.width : 1;
+  const scaleY = screenshot && screenshot.height > 0 ? viewport.height / screenshot.height : 1;
   return {
     x: box.x * scaleX - scroll.x,
     y: box.y * scaleY - scroll.y,

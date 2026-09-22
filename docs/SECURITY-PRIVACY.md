@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | Raw screenshot, raw DOM values, full redaction map | Extension memory only | Current task only |
 | Sensitive user value / Local Value entered in the side panel | Extension memory only | Current task only; emptied when the run ends |
-| Sanitized screenshot and snapshot | Gateway/provider request | Transient; gateway does not persist/log |
+| Sanitized observation (redacted snapshot, plus a redacted screenshot on vision rounds) | Gateway/provider request | Transient; gateway does not persist/log |
 | Sanitized audit event | Extension local storage | User-controlled retention |
 | Provider key | Encrypted extension profile or gateway environment | Never logged; never included in audits |
 
@@ -29,6 +29,8 @@ Redaction is opaque and labelled by broad class. Never send originals, OCR fragm
 ## Action policy
 
 Low-risk navigation actions may run after a visible proposal. Typing, selection, submission, download, permission prompt, or cross-origin continuation requires confirmation. The extension stops after 6 rounds, once a round's 90 seconds of active work (capture, scan, plan, act) is spent, a policy violation, a privacy error, or the user pressing Stop. Time spent waiting for the user's approval is not counted against the round budget, and each round plans and runs only one step against a fresh capture.
+
+Most rounds are settled from the page's accessibility tree alone, so they capture **no screenshot at all**: the observation is the redacted snapshot, and neither OCR nor face detection runs because there are no pixels to read. A screenshot is captured only when a round genuinely needs to look at the page -- an "explain / describe / what is visible" task, or a step whose target the snapshot could not resolve. Redaction is not weakened on either path: a vision-free round produces no screenshot pixels whatsoever, and DOM text still passes the same deterministic detectors before anything leaves the extension. A vision round whose capture fails fails closed; it is never downgraded to a text-only round.
 
 ## Action execution controls
 

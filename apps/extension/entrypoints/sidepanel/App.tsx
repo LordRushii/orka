@@ -584,16 +584,23 @@ function App() {
             <h2>Local audit</h2>
             <span className="meta">Original never leaves this device</span>
           </div>
-          <div className="audit__images">
-            <figure>
-              <figcaption>Original (local only)</figcaption>
-              <img src={screenshotUrl(audit.originalScreenshot)} alt="Original active-tab capture" />
-            </figure>
-            <figure>
-              <figcaption>Redacted observation</figcaption>
-              <img src={screenshotUrl(audit.redactedScreenshot)} alt="Opaque redacted active-tab capture" />
-            </figure>
-          </div>
+          {audit.originalScreenshot && audit.redactedScreenshot ? (
+            <div className="audit__images">
+              <figure>
+                <figcaption>Original (local only)</figcaption>
+                <img src={screenshotUrl(audit.originalScreenshot)} alt="Original active-tab capture" />
+              </figure>
+              <figure>
+                <figcaption>Redacted observation</figcaption>
+                <img src={screenshotUrl(audit.redactedScreenshot)} alt="Opaque redacted active-tab capture" />
+              </figure>
+            </div>
+          ) : (
+            <p className="meta">
+              Snapshot-only round: this step was decided from the page's accessibility tree, so no
+              pixels were captured at all.
+            </p>
+          )}
           <p className="meta">
             Sanitized origin: {observation.urlOrigin}. Runtime: {audit.runtime.mode}.
           </p>

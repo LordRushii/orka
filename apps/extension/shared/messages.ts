@@ -118,8 +118,9 @@ export type LocalAuditView = {
     override: RuntimeOverride;
     reason: string;
   };
-  originalScreenshot: EncodedScreenshot;
-  redactedScreenshot: EncodedScreenshot;
+  /** Present only on a vision round; a snapshot-only round captures nothing. */
+  originalScreenshot?: EncodedScreenshot;
+  redactedScreenshot?: EncodedScreenshot;
   redactionSummary: RedactionSummaryEntry[];
   /**
    * How sure the detections were, in bands rather than scores: enough for a
