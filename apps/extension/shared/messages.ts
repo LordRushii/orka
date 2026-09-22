@@ -1,6 +1,7 @@
 import type {
   RuntimeOverride,
   SafePageSnapshot,
+  SanitizationTimings,
   Viewport,
 } from "@orka/privacy-engine";
 export type { RuntimeOverride } from "@orka/privacy-engine";
@@ -130,6 +131,12 @@ export type LocalAuditView = {
   confidenceBands: CategoryBandCount[];
   /** The pinned model versions behind this scan, from the build's manifest. */
   models: ModelVersion[];
+  /**
+   * Measured local spans for the most recent scan (docs2/02-pii-engine-speed.md
+   * Step 0). Millisecond numbers only -- the panel can show where the time went
+   * without the spans ever being part of a request.
+   */
+  timings?: SanitizationTimings;
   createdAt: number;
 };
 

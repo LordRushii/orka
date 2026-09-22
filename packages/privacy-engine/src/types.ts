@@ -125,12 +125,35 @@ export type RuntimeProfile = {
  * HTTP client, and it carries no `contractVersion`/schema tying it to the
  * gateway wire format.
  */
+/**
+ * Measured timings for one sanitization, in milliseconds. Step 0 of
+ * docs2/02-pii-engine-speed.md: these are measured spans, not estimates, so a
+ * speed claim can be checked instead of assumed. Local only -- they describe
+ * this device's work on this scan and are never placed on the wire (they live
+ * on `LocalAudit`, which has no path to a request).
+ */
+export type SanitizationTimings = {
+  /** The whole OCR span as the scan paid it: concurrent with face, not additive. */
+  ocrMs: number;
+  /** The single full-image OCR pass. */
+  fullImageOcrMs: number;
+  /** One entry per native-resolution tile pass, in the order the tiles ran. */
+  tileOcrMs: number[];
+  faceMs: number;
+  mergeMs: number;
+  encodeMs: number;
+  /** Capture-to-observation span for the engine's own work. */
+  totalMs: number;
+};
+
 export type LocalAudit = {
   taskId: string;
   /** Absent on a snapshot-only round, where no pixels were ever captured. */
   originalScreenshot?: RasterImage;
   redactionMap: RedactionMap;
   detections: Detection[];
+  /** Measured local spans for this scan; see `SanitizationTimings`. */
+  timings: SanitizationTimings;
   createdAt: number;
 };
 

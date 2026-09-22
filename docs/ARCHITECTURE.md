@@ -114,6 +114,9 @@ it.**
   runtime mode, the category counts the observation already carries, a local JS heap sample when the
   browser reports one, and the outcome. A sample is a phase name, a duration, and a count; there is no
   field for text, a URL, or a detection location. It lives for one session and is never persisted.
+  The scan phase reports its own breakdown next to the audit images -- the full-image OCR pass, each
+  native-resolution tile, face detection, and encode, as measured spans (`SanitizationTimings`). OCR
+  and face run concurrently, so those spans are each stage's own cost, not parts of a sum.
 - **The outbound view** (`apps/extension/shared/outboundView.ts`) describes the actual gateway request
   by field path, kind, and size. It is derived from the request body, so it cannot drift into a
   flattering description of a payload that changed, and it refuses to print a value at any depth --

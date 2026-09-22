@@ -837,6 +837,7 @@ function auditView(
     runtime: task.profile,
     confidenceBands: summarizeConfidenceBands(task.audit?.detections ?? []),
     models: describeModelVersions(),
+    ...(task.audit?.timings ? { timings: task.audit.timings } : {}),
     ...(originalScreenshot ? { originalScreenshot } : {}),
     ...(observation.screenshot
       ? {

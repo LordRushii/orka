@@ -17,12 +17,28 @@ export function convertOcrPolygons(
   });
 }
 
+/**
+ * One measured OCR pass. Step 0 of docs2/02-pii-engine-speed.md needs the
+ * breakdown between the full-image pass and each tile, because "OCR is slow"
+ * is not actionable until you know which pass owns the time.
+ */
+export type OcrSpan = {
+  kind: "full" | "tile";
+  /** Tile index for a tile pass; 0 for the full-image pass. */
+  index: number;
+  ms: number;
+};
+
 export type OcrDetectionOptions = {
   /**
    * Native-resolution second pass. Pass `false` (or omit) to run only the
    * single full-image pass.
    */
   tiling?: TilePlanOptions | false;
+  /** Called once per pass with its measured duration; local diagnostics only. */
+  onSpan?: (span: OcrSpan) => void;
+  /** Injectable clock so a test can drive the spans without real waits. */
+  now?: () => number;
 };
 
 function toSources(tokens: OcrToken[], prefix: string, dx = 0, dy = 0): TextSource[] {
@@ -56,13 +72,21 @@ export async function runOcrDetection(
   image: RasterImage,
   options: OcrDetectionOptions = {},
 ): Promise<Detection[]> {
-  const sources = toSources(await recognizer.recognize(image), "ocr-full");
+  const now = options.now ?? Date.now;
+
+  const fullStartedAt = now();
+  const fullTokens = await recognizer.recognize(image);
+  options.onSpan?.({ kind: "full", index: 0, ms: Math.max(0, now() - fullStartedAt) });
+  const sources = toSources(fullTokens, "ocr-full");
 
   const tiles = options.tiling ? planOcrTiles(image, options.tiling) : [];
   for (const [index, tile] of tiles.entries()) {
     const crop = cropRaster(image, tile);
     if (crop.width === 0 || crop.height === 0) continue;
-    sources.push(...toSources(await recognizer.recognize(crop), `ocr-tile-${index}`, tile.x, tile.y));
+    const tileStartedAt = now();
+    const tokens = await recognizer.recognize(crop);
+    options.onSpan?.({ kind: "tile", index, ms: Math.max(0, now() - tileStartedAt) });
+    sources.push(...toSources(tokens, `ocr-tile-${index}`, tile.x, tile.y));
   }
 
   return detectTextPii(sources).filter((detection) => meetsThreshold(detection.category, detection.confidence));

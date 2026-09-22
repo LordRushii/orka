@@ -25,7 +25,7 @@ import {
 } from "../../shared/metrics.ts";
 import { formatBytes, type OutboundView } from "../../shared/outboundView.ts";
 import { useTaskSession, type PrivateValueRow } from "./useTaskSession.ts";
-import type { RuntimeOverride } from "../../shared/messages.ts";
+import type { LocalAuditView, RuntimeOverride } from "../../shared/messages.ts";
 import "./App.css";
 
 /** The session's round ceiling, so the panel's copy cannot drift from policy. */
@@ -123,6 +123,19 @@ function bandSummary(bands: readonly CategoryBandCount[]): string {
 
 function modelSummary(models: readonly ModelVersion[]): string {
   return models.map((model) => `${model.role} ${model.version}`).join(" · ");
+}
+
+/**
+ * Where a scan's time actually went (docs2/02-pii-engine-speed.md Step 0).
+ * OCR and face run concurrently, so this reports each stage's own span rather
+ * than pretending they add up to the total.
+ */
+function scanTimingSummary(timings: LocalAuditView["timings"]): string | undefined {
+  if (!timings) return undefined;
+  const ocr = timings.tileOcrMs.length > 0
+    ? `OCR ${formatMs(timings.ocrMs)} (full ${formatMs(timings.fullImageOcrMs)} + ${timings.tileOcrMs.length} tile${timings.tileOcrMs.length === 1 ? "" : "s"} ${formatMs(timings.tileOcrMs.reduce((total, ms) => total + ms, 0))})`
+    : `OCR ${formatMs(timings.ocrMs)}`;
+  return `${ocr} · face ${formatMs(timings.faceMs)} · encode ${formatMs(timings.encodeMs)}`;
 }
 
 /** One-line description of what an action would do, if it were approved. */
@@ -611,6 +624,9 @@ function App() {
           </div>
           <p className="meta">Detection confidence: {bandSummary(audit.confidenceBands)}</p>
           <p className="meta">Models: {modelSummary(audit.models)}</p>
+          {scanTimingSummary(audit.timings) && (
+            <p className="meta">Local scan cost: {scanTimingSummary(audit.timings)}</p>
+          )}
           <p className="panel__footnote">
             Bands, not boxes: the exact detection map and the original pixels stay in extension
             memory and are released when this session closes.

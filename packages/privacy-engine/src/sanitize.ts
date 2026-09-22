@@ -23,6 +23,7 @@ import type {
   RasterImage,
   RuntimeProfile,
   SanitizationResult,
+  SanitizationTimings,
 } from "./types";
 import { sanitizeUrlToOrigin, UnsafeUrlError } from "./url";
 
@@ -116,6 +117,21 @@ export async function sanitize(
       return { ok: false, error: failure("CAPTURE_FAILED", "Captured screenshot is missing or malformed.") };
     }
 
+    // Step 0 of docs2/02-pii-engine-speed.md: measure the scan before trying to
+    // make it faster. The spans land on the local-only `LocalAudit`, so a speed
+    // claim can be re-checked rather than believed.
+    const now = deps.now ?? Date.now;
+    const scanStartedAt = now();
+    const timings: SanitizationTimings = {
+      ocrMs: 0,
+      fullImageOcrMs: 0,
+      tileOcrMs: [],
+      faceMs: 0,
+      mergeMs: 0,
+      encodeMs: 0,
+      totalMs: 0,
+    };
+
     let urlOrigin: string;
     try {
       urlOrigin = sanitizeUrlToOrigin(input.url);
@@ -131,36 +147,52 @@ export async function sanitize(
     // OCR and face detection read captured pixels; a snapshot-only round has
     // none, so it never invokes them. The deterministic DOM detectors above
     // still run, so dropping the capture removes work, not redaction.
-    const ocrDetections: Detection[] = [];
-    const faceDetections: Detection[] = [];
+    let ocrDetections: Detection[] = [];
+    let faceDetections: Detection[] = [];
     if (screenshot) {
-      try {
-        ocrDetections.push(
-          ...(await withTimeout(
-            runOcrDetection(deps.textRecognizer, screenshot, {
-              // The runtime profile decides how much of the capture is re-read
-              // at native resolution; see PIXEL_SCAN_POLICY.
-              tiling: deps.ocrTiling ?? pixelScanBudget(profile.mode),
-            }),
-            deps.ocrTimeoutMs ?? DEFAULT_OCR_TIMEOUT_MS,
-            "OCR detection",
-          )),
-        );
-      } catch (error) {
-        const stageError = classifyDetectorError("OCR detection", error);
-        return { ok: false, error: failure(stageError.code, stageError.message) };
-      }
+      // Fix 1 of docs2/02-pii-engine-speed.md: OCR and face use separate
+      // workers and neither reads the other's output, so running them one after
+      // the other pays `t(OCR) + t(face)` for what is really `max(...)`. Both
+      // start together and are awaited together. Fail-closed is unchanged: if
+      // either rejects or times out, `Promise.all` rejects and the whole scan
+      // fails closed exactly as before -- a partial result is never a scan.
+      const timed = <T>(label: string, span: "ocrMs" | "faceMs", run: () => Promise<T>): Promise<T> => {
+        const startedAt = now();
+        return run().finally(() => {
+          timings[span] = Math.max(0, now() - startedAt);
+        }).catch((error) => {
+          throw classifyDetectorError(label, error);
+        });
+      };
+
+      const ocrPromise = timed("OCR detection", "ocrMs", () =>
+        withTimeout(
+          runOcrDetection(deps.textRecognizer, screenshot, {
+            // The runtime profile decides how much of the capture is re-read at
+            // native resolution; see PIXEL_SCAN_POLICY.
+            tiling: deps.ocrTiling ?? pixelScanBudget(profile.mode),
+            now,
+            onSpan: (span) => {
+              if (span.kind === "full") timings.fullImageOcrMs = span.ms;
+              else timings.tileOcrMs.push(span.ms);
+            },
+          }),
+          deps.ocrTimeoutMs ?? DEFAULT_OCR_TIMEOUT_MS,
+          "OCR detection",
+        ),
+      );
+      const facePromise = timed("Face detection", "faceMs", () =>
+        withTimeout(
+          runFaceDetection(deps.faceDetector, screenshot),
+          deps.faceTimeoutMs ?? DEFAULT_FACE_TIMEOUT_MS,
+          "Face detection",
+        ),
+      );
 
       try {
-        faceDetections.push(
-          ...(await withTimeout(
-            runFaceDetection(deps.faceDetector, screenshot),
-            deps.faceTimeoutMs ?? DEFAULT_FACE_TIMEOUT_MS,
-            "Face detection",
-          )),
-        );
+        [ocrDetections, faceDetections] = await Promise.all([ocrPromise, facePromise]);
       } catch (error) {
-        const stageError = classifyDetectorError("Face detection", error);
+        const stageError = classifyDetectorError("detection", error);
         return { ok: false, error: failure(stageError.code, stageError.message) };
       }
     }
@@ -177,10 +209,14 @@ export async function sanitize(
     let redactedAccessibility;
     let redactedScreenshot: SanitizedScreenshot | undefined;
     try {
+      const mergeStartedAt = now();
       redactionMap = mergeDetections(allDetections, bounds);
       redactedAccessibility = redactAccessibilitySnapshot(input.snapshot.elements, redactionMap);
+      timings.mergeMs = Math.max(0, now() - mergeStartedAt);
       if (screenshot) {
+        const encodeStartedAt = now();
         const encoded = await deps.encoder.encode(redactScreenshot(screenshot, redactionMap));
+        timings.encodeMs = Math.max(0, now() - encodeStartedAt);
         redactedScreenshot = {
           mimeType: encoded.mimeType,
           width: screenshot.width,
@@ -193,7 +229,7 @@ export async function sanitize(
       return { ok: false, error: failure("MERGE_FAILED", message) };
     }
 
-    const now = deps.now ?? Date.now;
+    timings.totalMs = Math.max(0, now() - scanStartedAt);
     const candidateObservation = {
       contractVersion: CONTRACT_VERSION,
       taskId: input.taskId,
@@ -222,6 +258,7 @@ export async function sanitize(
       ...(screenshot ? { originalScreenshot: screenshot } : {}),
       redactionMap,
       detections: allDetections,
+      timings,
       createdAt: now(),
     };
 
