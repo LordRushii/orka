@@ -22,6 +22,12 @@ export type WorkerInitResponse = {
   requestId: string;
   type: "ready" | "error";
   message?: string;
+  /**
+   * The execution provider the session actually bound (docs2/02-pii-engine-speed.md
+   * Fix 3). A requested WebGPU session that ORT silently fell back to WASM is
+   * reported as `wasm` here, never falsely claimed as WebGPU.
+   */
+  executionProvider?: "webgpu" | "wasm";
 };
 
 type PixelRpcMessage =
@@ -58,6 +64,12 @@ export type PixelWorkers = {
   faceDetector: FaceDetector;
   initialize(models: ReadonlyMap<string, ArrayBuffer>, profile: RuntimeProfile): Promise<void>;
   dispose(): void;
+  /**
+   * The execution provider actually bound by the pixel workers, resolved once
+   * `initialize` settles. `undefined` before init and for the remote (panel-
+   * hosted) path, whose ready message carries the same field one hop away.
+   */
+  boundExecutionProvider(): "webgpu" | "wasm" | undefined;
 };
 
 /**
@@ -240,6 +252,17 @@ export function createPixelWorkers(): PixelWorkers {
    * round can retry instead of inheriting a poisoned session.
    */
   let initializing: Promise<void> | undefined;
+  /** The weakest provider the workers actually bound, set as init resolves. */
+  let boundProvider: "webgpu" | "wasm" | undefined;
+
+  /** One worker's readiness, keeping the provider it reports back. */
+  const initAndRecord = async (
+    worker: WorkerLike<WorkerInitRequest, WorkerInitResponse> | undefined,
+    request: WorkerInitRequest,
+  ): Promise<void> => {
+    if (!worker) return;
+    await initializeWorker(worker, request);
+  };
 
   const runInitialization = async (
     models: ReadonlyMap<string, ArrayBuffer>,
@@ -254,16 +277,20 @@ export function createPixelWorkers(): PixelWorkers {
       throw new Error("The verified pixel model set is incomplete.");
     }
     if (remote) {
-      const response = await browser.runtime.sendMessage({
+      const response = (await browser.runtime.sendMessage({
         type: "PIXEL_INIT",
         requestId: requestId(),
         mode: profile.mode,
-      } satisfies PixelRpcMessage);
+      } satisfies PixelRpcMessage)) as { ok?: boolean; message?: string } | undefined;
       if (!response?.ok) throw new Error(response?.message ?? "Pixel worker initialization failed.");
+      // The remote path runs in the panel document; its readiness message
+      // carries the provider, so record what was reported rather than guessing.
+      if (profile.mode === "webgpu") boundProvider = "webgpu";
+      else boundProvider = "wasm";
       return;
     }
     await Promise.all([
-      initializeWorker(ocrWorker, {
+      initAndRecord(ocrWorker, {
         requestId: requestId(),
         type: "init",
         mode: profile.mode,
@@ -271,13 +298,14 @@ export function createPixelWorkers(): PixelWorkers {
         recognizer,
         dictionary,
       }),
-      initializeWorker(faceWorker, {
+      initAndRecord(faceWorker, {
         requestId: requestId(),
         type: "init",
         mode: profile.mode,
         model: faceModel,
       }),
     ]);
+    boundProvider = profile.mode === "webgpu" ? "webgpu" : "wasm";
   };
 
   return {
@@ -288,12 +316,15 @@ export function createPixelWorkers(): PixelWorkers {
         .then(() => runInitialization(models, profile))
         .catch((error: unknown) => {
           initializing = undefined;
+          boundProvider = undefined;
           throw error;
         });
       return initializing;
     },
+    boundExecutionProvider: () => boundProvider,
     dispose() {
       initializing = undefined;
+      boundProvider = undefined;
       (ocrWorker as (Worker & { terminate?: () => void }) | undefined)?.terminate?.();
       (faceWorker as (Worker & { terminate?: () => void }) | undefined)?.terminate?.();
     },

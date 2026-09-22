@@ -5,6 +5,24 @@ type Init = { type: "init"; requestId: string; model: ArrayBuffer; mode?: "webgp
 type Detect = { type: "detect"; requestId: string; width: number; height: number; data: ArrayBuffer };
 type Message = Init | Detect;
 
+/**
+ * The execution provider the inference session actually bound, reported back
+ * with `ready` (docs2/02-pii-engine-speed.md Fix 3). `executionProviders` is
+ * optional in ORT's typings but set by every real session; reading it back is
+ * what makes a silent WASM fallback visible instead of a runtime that claims
+ * WebGPU while running at CPU speed. WASM is a valid mode -- it is just never
+ * allowed to pass itself off as WebGPU.
+ */
+function resolveExecutionProvider(
+  bound: readonly string[] | undefined,
+  requested: Init["mode"],
+): "webgpu" | "wasm" {
+  if (bound?.some((provider) => provider.startsWith("webgpu"))) return "webgpu";
+  return "wasm";
+}
+
+let boundExecutionProvider: "webgpu" | "wasm" = "wasm";
+
 let session: ort.InferenceSession | undefined;
 ort.env.wasm.wasmPaths = new URL("./models/", import.meta.url).href;
 
@@ -39,7 +57,11 @@ self.onmessage = async (event: MessageEvent<Message>) => {
       session = await ort.InferenceSession.create(toArrayBuffer(message.model), {
         executionProviders: message.mode === "webgpu" ? ["webgpu", "wasm"] : ["wasm"],
       });
-      self.postMessage({ requestId: message.requestId, type: "ready" });
+      boundExecutionProvider = resolveExecutionProvider(
+        (session as { executionProviders?: readonly string[] }).executionProviders,
+        message.mode,
+      );
+      self.postMessage({ requestId: message.requestId, type: "ready", executionProvider: boundExecutionProvider });
       return;
     }
     if (!session) throw new Error("Face worker has not been initialized.");

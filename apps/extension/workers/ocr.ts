@@ -15,9 +15,12 @@ type Recognize = { type: "recognize"; requestId: string; width: number; height: 
 type Message = Init | Recognize;
 
 type OrtModule = NonNullable<import("paddleocr").PaddleOptions["ort"]>;
+type OrtInferenceSession = Awaited<ReturnType<OrtModule["InferenceSession"]["create"]>>;
 
 let service: PaddleOcrService | undefined;
 let runtimeMode: RuntimeMode = "wasm";
+/** What ORT actually bound; see `ortModuleFor` (docs2/02-pii-engine-speed.md Fix 3). */
+let boundExecutionProvider: "webgpu" | "wasm" = "wasm";
 ort.env.wasm.wasmPaths = new URL("./models/", import.meta.url).href;
 
 /**
@@ -84,11 +87,21 @@ function ortModuleFor(mode: RuntimeMode): OrtModule {
     ...base,
     InferenceSession: {
       ...base.InferenceSession,
-      create: (modelBuffer: ArrayBuffer) =>
-        ort.InferenceSession.create(modelBuffer, {
+      create: async (modelBuffer: ArrayBuffer) => {
+        const session = (await ort.InferenceSession.create(modelBuffer, {
           executionProviders: ["webgpu", "wasm"],
-        }) as unknown as ReturnType<OrtModule["InferenceSession"]["create"]>,
-    },
+        })) as OrtInferenceSession & { executionProviders?: readonly string[] };
+        // Fix 3: read back what ORT actually bound. A silent fall to the WASM
+        // EP looks like "selected webgpu" while running at CPU speed; this
+        // makes it visible without hard-failing, since WASM is a valid mode.
+        boundExecutionProvider = session.executionProviders?.some((provider: string) =>
+          provider.startsWith("webgpu"),
+        )
+          ? "webgpu"
+          : "wasm";
+        return session as unknown as Awaited<ReturnType<OrtModule["InferenceSession"]["create"]>>;
+      },
+    } as OrtModule["InferenceSession"],
   } as OrtModule;
 }
 
@@ -111,7 +124,7 @@ self.onmessage = async (event: MessageEvent<Message>) => {
         detection: { modelBuffer: toArrayBuffer(message.detector) },
         recognition: { modelBuffer: toArrayBuffer(message.recognizer), charactersDictionary: dictionary },
       });
-      self.postMessage({ requestId: message.requestId, type: "ready" });
+      self.postMessage({ requestId: message.requestId, type: "ready", executionProvider: boundExecutionProvider });
       return;
     }
     if (!service) throw new Error("OCR worker has not been initialized.");

@@ -615,7 +615,8 @@ function App() {
             </p>
           )}
           <p className="meta">
-            Sanitized origin: {observation.urlOrigin}. Runtime: {audit.runtime.mode}.
+            Sanitized origin: {observation.urlOrigin}. Runtime: {audit.runtime.mode}
+            {audit.boundExecutionProvider ? ` (models on ${audit.boundExecutionProvider})` : ""}.
           </p>
           <div className="audit__summary">
             {audit.redactionSummary.length === 0

@@ -164,6 +164,12 @@ type ActiveTask = {
   settled?: boolean;
   /** Local timings for this session; aggregated numbers only (see metrics.ts). */
   metrics: MetricsRecorder;
+  /**
+   * The execution provider the pixel workers actually bound (Fix 3). Read once
+   * after init and echoed into the audit view, so a silent WASM fallback on a
+   * machine the user asked to prefer WebGPU is visible instead of claimed.
+   */
+  boundProvider?: "webgpu" | "wasm";
   modelManager: ReturnType<typeof createPixelModelManager>;
   pixelWorkers: PixelWorkers;
 };
@@ -623,6 +629,7 @@ async function runTask(task: ActiveTask): Promise<void> {
     // session (docs2/02-pii-engine-speed.md Fix 4).
     const models = await task.modelManager.initialize(task.profile);
     await task.pixelWorkers.initialize(models, task.profile);
+    task.boundProvider = task.pixelWorkers.boundExecutionProvider();
     currentTask(task);
   } catch (error) {
     releaseTask(task);
@@ -838,6 +845,7 @@ function auditView(
     confidenceBands: summarizeConfidenceBands(task.audit?.detections ?? []),
     models: describeModelVersions(),
     ...(task.audit?.timings ? { timings: task.audit.timings } : {}),
+    ...(task.boundProvider ? { boundExecutionProvider: task.boundProvider } : {}),
     ...(originalScreenshot ? { originalScreenshot } : {}),
     ...(observation.screenshot
       ? {

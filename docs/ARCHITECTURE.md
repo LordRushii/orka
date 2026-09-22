@@ -52,6 +52,8 @@ The project uses deep modules: callers use small, stable interfaces while the co
 6. Create the size-capped `SanitizedObservation`; keep the detailed local map only in memory.
 7. If a required detector errors, times out, or is below its confidence policy, fail closed and do not call the gateway. A screenshot-bearing round that cannot be captured fails closed too, rather than silently proceeding without the pixels it asked for.
 
+Speed notes (docs2/02-pii-engine-speed.md): OCR and face detection run **concurrently** on their separate workers, so a scan pays `max(t(OCR), t(face))` rather than their sum; the pixel workers compile their ONNX graphs **once per session**, not per round; and each worker reports the execution provider it actually bound, so a silent WebGPU→WASM fallback is visible in the audit panel instead of being claimed away. Every scan records measured spans (`SanitizationTimings`) on the local-only audit, and the corpus regression gate bounds any tile-budget change: recall cannot be traded for latency without the test going red.
+
 ## Planner protocol
 
 `SanitizedObservation` contains: redacted task text, a sanitized visible accessibility snapshot, a sanitized screenshot **on vision rounds only**, coarse redaction categories/locations when needed, current URL origin (not query string), and prior approved action summaries. A snapshot-only observation simply carries no screenshot field; every adapter sends it as a text-only planner request, and the gateway's image-size check is skipped because there is no image.
@@ -126,10 +128,13 @@ it.**
   medium, and low counts per category. Enough to judge a redaction; not enough to rebuild the map.
 
 **The honest limit.** The SIH weights include three figures -- visual context, PII recall/precision,
-and redaction precision -- that need labelled ground truth, which a browser does not have. The panel
-marks them *not measurable locally* and the benchmark corpus is deferred, so the demo reports blanks
-rather than estimates. `SIH_WEIGHTS` carries a `measurableLocally` flag for exactly this reason, and a
-test asserts that only the two genuinely measurable weights claim to be measured.
+and redaction precision -- that need labelled ground truth, which a browser does not have. V2 adds a
+checked-in synthetic corpus (`packages/privacy-engine/fixtures/benchmark-corpus/`) with hand-labelled
+ground truth and an IoU scoring harness, so PII recall/precision and redaction coverage are now
+**measured, regression-gated numbers** (`benchmarkCorpus.test.ts` fails if any metric drops below the
+checked-in baseline). The panel still marks them conservatively; the corpus is a local benchmark over
+synthetic pages, not a live measurement. Visual context remains not measurable locally, and
+`SIH_WEIGHTS` carries a `measurableLocally` flag for exactly this reason.
 
 `docs/PHASE-5-DEMO.md` is the runbook; `docs/PHASE-5-HARDENING.md` maps each hardening item to the
 test that verifies it, and says plainly which ones need a person.

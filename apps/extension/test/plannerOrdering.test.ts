@@ -108,6 +108,7 @@ function fakeWorkers(overrides: Partial<PixelWorkers> = {}): PixelWorkers {
     },
     faceDetector: { detect: async () => [{ box: { x: 8, y: 60, width: 40, height: 44 }, confidence: 0.9 }] },
     initialize: async () => {},
+    boundExecutionProvider: () => undefined,
     dispose: () => {},
     ...overrides,
   };

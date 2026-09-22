@@ -137,6 +137,12 @@ export type LocalAuditView = {
    * without the spans ever being part of a request.
    */
   timings?: SanitizationTimings;
+  /**
+   * The execution provider the pixel workers actually bound (Fix 3). A panel
+   * that says `webgpu` here is reporting the ORT session's own provider, not
+   * the mode the user asked for.
+   */
+  boundExecutionProvider?: "webgpu" | "wasm";
   createdAt: number;
 };
 
