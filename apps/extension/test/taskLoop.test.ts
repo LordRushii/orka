@@ -323,6 +323,24 @@ describe("task loop: the vision-free fast path (Phase 6.5)", () => {
     expect(h.visions).toEqual([true]);
   });
 
+  test("a failed vision capture fails closed with its own reason, never text-only", async () => {
+    const h = harness({ plans: [DONE], visionRequired: true });
+    const failing: TaskLoopPorts = {
+      ...h.ports,
+      async scan() {
+        // A vision round whose capture failed: the background reports exactly
+        // this, and the loop must not substitute the previous step's summary.
+        throw new Error("Browser denied the capture. Reopen Orka from the toolbar.");
+      },
+    };
+
+    const run = await runTaskLoop({ session: h.session }, failing, { visionRequired: true });
+
+    expect(run.status).toBe("failed");
+    expect(run.summary).toBe("Browser denied the capture. Reopen Orka from the toolbar.");
+    expect(h.plannedAgainst).toEqual([]);
+  });
+
   test("a snapshot round that cannot place its target retries once with pixels", async () => {
     // Round 1 runs against the element list alone and cannot resolve the
     // target; round 2 sees the page and finishes.

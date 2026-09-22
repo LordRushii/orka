@@ -75,6 +75,16 @@ function summarize(run: StepRun): string {
 }
 
 /**
+ * The one safe sentence for a port that threw. The port owns the wording (a
+ * capture failure says so); the loop only has to avoid reporting something
+ * stale, which it previously did by falling back to the last step's summary.
+ */
+function failureMessage(error: unknown, fallback: string): string {
+  const message = error instanceof Error && error.message ? error.message : fallback;
+  return message.slice(0, 280);
+}
+
+/**
  * Runs the observe → plan-one-step → approve → execute-one-step → re-observe
  * loop until `done`, a denial, Stop, or a limit.
  *
@@ -116,13 +126,18 @@ export async function runTaskLoop(
     let observation: SanitizedObservation;
     try {
       observation = await ports.scan(priorActions, visionRequired);
-    } catch {
+    } catch (error) {
       // Fail closed: a scan that cannot complete never reaches the planner. A
       // session that was stopped while the scan ran is a stop, not a failure.
       if (activeTaskGone(session)) {
         return { status: "stopped", stopReason: "user", summary: lastSummary, priorActions, rounds };
       }
-      return { status: "failed", summary: lastSummary, priorActions, rounds };
+      return {
+        status: "failed",
+        summary: failureMessage(error, "The page could not be read."),
+        priorActions,
+        rounds,
+      };
     }
     if (activeTaskGone(session)) {
       return { status: "stopped", stopReason: "user", summary: lastSummary, priorActions, rounds };
@@ -131,11 +146,16 @@ export async function runTaskLoop(
     let action: Action;
     try {
       action = await ports.plan(observation);
-    } catch {
+    } catch (error) {
       if (activeTaskGone(session)) {
         return { status: "stopped", stopReason: "user", summary: lastSummary, priorActions, rounds };
       }
-      return { status: "failed", summary: lastSummary, priorActions, rounds };
+      return {
+        status: "failed",
+        summary: failureMessage(error, "The planner could not propose a step."),
+        priorActions,
+        rounds,
+      };
     }
     if (activeTaskGone(session)) {
       return { status: "stopped", stopReason: "user", summary: lastSummary, priorActions, rounds };
