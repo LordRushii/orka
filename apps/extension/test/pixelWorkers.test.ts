@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import type { RuntimeProfile } from "@orka/privacy-engine";
 import {
+  createPixelWorkers,
   initializeWorker,
   type WorkerInitRequest,
   type WorkerInitResponse,
@@ -169,6 +171,88 @@ describe("initializeWorker", () => {
       expect(worker.requests[0]!.mode).toBe(mode);
       worker.emit({ requestId: request.requestId, type: "ready" });
       await pending;
+    }
+  });
+});
+
+describe("createPixelWorkers: one compile per session (Fix 4)", () => {
+  const PROFILE: RuntimeProfile = { mode: "wasm", override: "auto", reason: "test" };
+
+  function pinnedModels(): ReadonlyMap<string, ArrayBuffer> {
+    return new Map([
+      ["paddleocr-detector", new ArrayBuffer(4)],
+      ["paddleocr-recognizer", new ArrayBuffer(4)],
+      ["paddleocr-dictionary", new ArrayBuffer(4)],
+      ["ultraface", new ArrayBuffer(4)],
+    ]);
+  }
+
+  /**
+   * Runs `body` with a fake `browser` and no nested-Worker global, so the
+   * pixel workers take the extension-messaging path a real background service
+   * worker uses (MV3 cannot create nested workers).
+   */
+  async function withRemoteHost<T>(body: (calls: Array<Record<string, unknown>>) => Promise<T>): Promise<T> {
+    const globals = globalThis as { browser?: unknown; Worker?: unknown };
+    const originalBrowser = globals.browser;
+    const originalWorker = globals.Worker;
+    const calls: Array<Record<string, unknown>> = [];
+    globals.browser = {
+      runtime: {
+        getURL: (path: string) => `chrome-extension://test/${path}`,
+        sendMessage: async (message: Record<string, unknown>) => {
+          calls.push(message);
+          return { ok: true };
+        },
+      },
+    };
+    delete globals.Worker;
+    try {
+      return await body(calls);
+    } finally {
+      globals.browser = originalBrowser;
+      globals.Worker = originalWorker;
+    }
+  }
+
+  test("a second initialize reuses the session instead of re-creating the workers", async () => {
+    await withRemoteHost(async (calls) => {
+      const workers = createPixelWorkers();
+      await workers.initialize(pinnedModels(), PROFILE);
+      await workers.initialize(pinnedModels(), PROFILE);
+
+      // PIXEL_INIT terminates and recreates both workers, and each recreation
+      // re-compiles the ONNX graphs -- a per-round tax the loop cannot afford.
+      const inits = calls.filter((call) => call.type === "PIXEL_INIT");
+      expect(inits).toHaveLength(1);
+      workers.dispose();
+    });
+  });
+
+  test("a failed init is not cached, so the next round can retry", async () => {
+    const globals = globalThis as { browser?: unknown; Worker?: unknown };
+    const originalBrowser = globals.browser;
+    const originalWorker = globals.Worker;
+    let attempts = 0;
+    globals.browser = {
+      runtime: {
+        getURL: (path: string) => `chrome-extension://test/${path}`,
+        sendMessage: async () => {
+          attempts += 1;
+          return attempts === 1 ? { ok: false, message: "graph compile failed" } : { ok: true };
+        },
+      },
+    };
+    delete globals.Worker;
+    try {
+      const workers = createPixelWorkers();
+      await expect(workers.initialize(pinnedModels(), PROFILE)).rejects.toThrow("graph compile failed");
+      await expect(workers.initialize(pinnedModels(), PROFILE)).resolves.toBeUndefined();
+      expect(attempts).toBe(2);
+      workers.dispose();
+    } finally {
+      globals.browser = originalBrowser;
+      globals.Worker = originalWorker;
     }
   });
 });

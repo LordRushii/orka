@@ -229,45 +229,71 @@ export function createPixelWorkers(): PixelWorkers {
       return response.value;
     } };
 
+  /**
+   * The in-flight (or completed) init, so the session is compiled once.
+   *
+   * `PIXEL_INIT` terminates and recreates both workers, and `initializeWorker`
+   * compiles an ONNX graph per worker -- the slowest step of a scan. The loop
+   * calls `initialize` once per Task Session, but a second call must be a
+   * no-op rather than another graph compile, so the promise is cached. A
+   * *failed* init is deliberately not cached: it clears the slot so the next
+   * round can retry instead of inheriting a poisoned session.
+   */
+  let initializing: Promise<void> | undefined;
+
+  const runInitialization = async (
+    models: ReadonlyMap<string, ArrayBuffer>,
+    profile: RuntimeProfile,
+  ): Promise<void> => {
+    const requestId = () => crypto.randomUUID();
+    const detector = models.get("paddleocr-detector");
+    const recognizer = models.get("paddleocr-recognizer");
+    const dictionary = models.get("paddleocr-dictionary");
+    const faceModel = models.get("ultraface");
+    if (!detector || !recognizer || !dictionary || !faceModel) {
+      throw new Error("The verified pixel model set is incomplete.");
+    }
+    if (remote) {
+      const response = await browser.runtime.sendMessage({
+        type: "PIXEL_INIT",
+        requestId: requestId(),
+        mode: profile.mode,
+      } satisfies PixelRpcMessage);
+      if (!response?.ok) throw new Error(response?.message ?? "Pixel worker initialization failed.");
+      return;
+    }
+    await Promise.all([
+      initializeWorker(ocrWorker, {
+        requestId: requestId(),
+        type: "init",
+        mode: profile.mode,
+        detector,
+        recognizer,
+        dictionary,
+      }),
+      initializeWorker(faceWorker, {
+        requestId: requestId(),
+        type: "init",
+        mode: profile.mode,
+        model: faceModel,
+      }),
+    ]);
+  };
+
   return {
     textRecognizer,
     faceDetector,
-    async initialize(models, profile) {
-      const requestId = () => crypto.randomUUID();
-      const detector = models.get("paddleocr-detector");
-      const recognizer = models.get("paddleocr-recognizer");
-      const dictionary = models.get("paddleocr-dictionary");
-      const faceModel = models.get("ultraface");
-      if (!detector || !recognizer || !dictionary || !faceModel) {
-        throw new Error("The verified pixel model set is incomplete.");
-      }
-      if (remote) {
-        const response = await browser.runtime.sendMessage({
-          type: "PIXEL_INIT",
-          requestId: requestId(),
-          mode: profile.mode,
-        } satisfies PixelRpcMessage);
-        if (!response?.ok) throw new Error(response?.message ?? "Pixel worker initialization failed.");
-        return;
-      }
-      await Promise.all([
-        initializeWorker(ocrWorker, {
-          requestId: requestId(),
-          type: "init",
-          mode: profile.mode,
-          detector,
-          recognizer,
-          dictionary,
-        }),
-        initializeWorker(faceWorker, {
-          requestId: requestId(),
-          type: "init",
-          mode: profile.mode,
-          model: faceModel,
-        }),
-      ]);
+    initialize(models, profile) {
+      initializing ??= Promise.resolve()
+        .then(() => runInitialization(models, profile))
+        .catch((error: unknown) => {
+          initializing = undefined;
+          throw error;
+        });
+      return initializing;
     },
     dispose() {
+      initializing = undefined;
       (ocrWorker as (Worker & { terminate?: () => void }) | undefined)?.terminate?.();
       (faceWorker as (Worker & { terminate?: () => void }) | undefined)?.terminate?.();
     },
