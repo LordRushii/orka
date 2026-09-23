@@ -159,6 +159,9 @@ export function useTaskSession() {
   const [observation, setObservation] = useState<SanitizedObservation>();
   const [failure, setFailure] = useState<SanitizationFailure>();
   const [requestError, setRequestError] = useState<string>();
+  // True after a start attempt fell on a page no extension can read (a
+  // chrome:// page, the Web Store, file://): the panel offers the URL rescue.
+  const [needsNavigation, setNeedsNavigation] = useState(false);
   const [plan, setPlan] = useState<ActionPlan>();
   const [planMeta, setPlanMeta] = useState<PlanMetadata>();
   const [planError, setPlanError] = useState<PlanFailureMessage["error"]>();
@@ -321,6 +324,44 @@ export function useTaskSession() {
       });
   }, []);
 
+  /**
+   * The shared tail of both start paths: hand the task to the background with a
+   * minted authority, then adopt the new session locally. The values live in
+   * the background for this session; this form keeps no second copy -- only
+   * their names, so it can explain the plan.
+   */
+  const dispatchStart = useCallback(
+    async (
+      authorityId: string,
+      nextTaskId: string,
+      task: string,
+      runtimeOverride: RuntimeOverride,
+      values: Record<string, string>,
+    ) => {
+      const response = await browser.runtime.sendMessage({
+        type: "START_TASK",
+        taskId: nextTaskId,
+        task,
+        runtime: runtimeOverride,
+        captureAuthorityId: authorityId,
+        sensitiveValues: values,
+      });
+      if (!response?.ok) {
+        setRequestError(response?.message ?? "Task Session could not start.");
+        return false;
+      }
+      setDeclaredValueNames(Object.keys(values));
+      setPrivateValues([emptyPrivateValueRow()]);
+      // A new task is a new conversation: the previous session's turns go with
+      // its audit, so a drafted value cannot linger in a closed run's thread.
+      roundRef.current = 1;
+      setTranscript(appendUserTask([], task));
+      setTaskId(nextTaskId);
+      return true;
+    },
+    [],
+  );
+
   const start = useCallback(
     async (task: string, runtimeOverride: RuntimeOverride) => {
       const collected = collectPrivateValues(privateValues);
@@ -340,35 +381,61 @@ export function useTaskSession() {
       setMetrics(undefined);
       setOutbound(undefined);
       setRound(0);
-      const authority = await browser.runtime.sendMessage({ type: "GET_CAPTURE_AUTHORITY" });
+      // Host access is a static grant now (see wxt.config), so a task starts on
+      // the current tab with no prompt: resolve the panel's window and mint the
+      // authority against its active tab.
+      const win = await browser.windows.getCurrent();
+      if (typeof win.id !== "number") {
+        setRequestError("Open a normal browser window, then start the task.");
+        return false;
+      }
+      const authority = await browser.runtime.sendMessage({ type: "MINT_CAPTURE_AUTHORITY", windowId: win.id });
       if (!authority?.ok || typeof authority.authorityId !== "string") {
-        setRequestError(authority?.message ?? "Reopen Orka from the toolbar before starting a task.");
+        // Chrome's own pages (new tab, settings, Web Store, file://) can't be
+        // read by any extension. Rather than dead-end, surface the URL rescue:
+        // the panel can offer to open a real page in this tab first.
+        if (authority?.code === "NON_WEB_PAGE") setNeedsNavigation(true);
+        setRequestError(authority?.message ?? "Open a normal HTTP(S) page in this tab, then start the task.");
         return false;
       }
-      const response = await browser.runtime.sendMessage({
-        type: "START_TASK",
-        taskId: nextTaskId,
-        task,
-        runtime: runtimeOverride,
-        captureAuthorityId: authority.authorityId,
-        sensitiveValues: collected.values,
-      });
-      if (!response?.ok) {
-        setRequestError(response?.message ?? "Task Session could not start.");
-        return false;
-      }
-      // The values live in the background for this session; this form keeps no
-      // second copy of them -- only their names, so it can explain the plan.
-      setDeclaredValueNames(Object.keys(collected.values));
-      setPrivateValues([emptyPrivateValueRow()]);
-      // A new task is a new conversation: the previous session's turns go with
-      // its audit, so a drafted value cannot linger in a closed run's thread.
-      roundRef.current = 1;
-      setTranscript(appendUserTask([], task));
-      setTaskId(nextTaskId);
-      return true;
+      return dispatchStart(authority.authorityId, nextTaskId, task, runtimeOverride, collected.values);
     },
-    [privateValues],
+    [privateValues, dispatchStart],
+  );
+
+  /**
+   * The URL rescue for a non-web tab: ask the background to open `url` in this
+   * window's active tab, wait for the load, and start the task on the page it
+   * lands on. Chrome's built-in pages stay unreachable; this only works because
+   * the user named a real web address to open in their place.
+   */
+  const startAtUrl = useCallback(
+    async (url: string, task: string, runtimeOverride: RuntimeOverride) => {
+      const collected = collectPrivateValues(privateValues);
+      if (!collected.ok) {
+        setRequestError(collected.message);
+        return false;
+      }
+      const nextTaskId = crypto.randomUUID();
+      setRequestError(undefined);
+      const win = await browser.windows.getCurrent();
+      if (typeof win.id !== "number") {
+        setRequestError("Open a normal browser window, then start the task.");
+        return false;
+      }
+      const authority = await browser.runtime.sendMessage({
+        type: "NAVIGATE_ACTIVE_TAB",
+        windowId: win.id,
+        url,
+      });
+      if (!authority?.ok || typeof authority.authorityId !== "string") {
+        setRequestError(authority?.message ?? "That page could not be opened.");
+        return false;
+      }
+      setNeedsNavigation(false);
+      return dispatchStart(authority.authorityId, nextTaskId, task, runtimeOverride, collected.values);
+    },
+    [privateValues, dispatchStart],
   );
 
   const stop = useCallback(async () => {
@@ -509,6 +576,8 @@ export function useTaskSession() {
       declaredValueNames,
       canStop,
       start,
+      startAtUrl,
+      needsNavigation,
       stop,
       closeAudit,
       approve,
@@ -541,6 +610,8 @@ export function useTaskSession() {
       declaredValueNames,
       canStop,
       start,
+      startAtUrl,
+      needsNavigation,
       stop,
       closeAudit,
       approve,

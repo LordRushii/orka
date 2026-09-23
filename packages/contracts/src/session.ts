@@ -111,11 +111,14 @@ const DEFAULT_MAX_ACTIONS = 10;
 const DEFAULT_MAX_DURATION_MS = 90_000;
 
 /**
- * Hard cap on round-trips in one multi-round Task Session, independent from
- * `MAX_ACTIONS_PER_PLAN`. A "round" is one capture -> one plan -> one human
- * decision -> (if approved) one executed step. See docs2/04-PRODUCT-PRD.md §4.
+ * A Task Session has no fixed round ceiling: it runs a round at a time until the
+ * planner emits `done`, the user Stops, a step is denied, or a single round
+ * busts its own 90-second active budget. Every round is user-approved, so the
+ * session is bounded by the person driving it rather than by a round counter. A
+ * finite `maxRounds` can still be passed (tests use one), but the default is
+ * unlimited. A "round" is one capture -> one plan -> one human decision ->
+ * (if approved) one executed step. See docs2/04-PRODUCT-PRD.md §4.
  */
-export const MAX_ROUNDS_PER_SESSION = 6;
 
 /**
  * A single Task Session. Construct one per user-initiated task; discard it
@@ -138,7 +141,7 @@ export class TaskSession {
   constructor(options: TaskSessionOptions = {}) {
     this.maxActions = options.maxActions ?? DEFAULT_MAX_ACTIONS;
     this.maxDurationMs = options.maxDurationMs ?? DEFAULT_MAX_DURATION_MS;
-    this.maxRounds = options.maxRounds ?? MAX_ROUNDS_PER_SESSION;
+    this.maxRounds = options.maxRounds ?? Number.POSITIVE_INFINITY;
     this.now = options.now ?? Date.now;
   }
 
@@ -265,8 +268,9 @@ export class TaskSession {
   }
 
   /**
-   * Begins a new round and enforces the round cap (Decision 1). The loop calls
-   * this before each capture; it auto-stops the session once the cap is hit and
+   * Begins a new round. With the default unlimited `maxRounds` this only counts
+   * the round (for the panel's progress copy) and never stops. When a finite
+   * `maxRounds` is set, it auto-stops the session once the cap is hit and
    * returns `{ stopped: true }` so the caller does not start another round.
    */
   startRound(): { stopped: boolean } {

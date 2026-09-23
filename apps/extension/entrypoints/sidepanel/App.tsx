@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   CLOUD_PROVIDER_IDS,
-  MAX_ROUNDS_PER_SESSION,
   PROVIDER_IDS,
   type ProviderId,
   type TaskState,
@@ -14,9 +13,6 @@ import { EvidencePanel } from "./EvidencePanel.tsx";
 import { formatMs } from "./panelFormat.ts";
 import type { RuntimeOverride } from "../../shared/messages.ts";
 import "./App.css";
-
-/** The session's round ceiling, so the panel's copy cannot drift from policy. */
-const MAX_ROUNDS = MAX_ROUNDS_PER_SESSION;
 
 const RUNTIMES: readonly { id: RuntimeOverride; label: string }[] = [
   { id: "auto", label: "Auto" },
@@ -86,6 +82,8 @@ function App() {
     declaredValueNames,
     canStop,
     start,
+    startAtUrl,
+    needsNavigation,
     stop,
     closeAudit,
     approve,
@@ -97,6 +95,7 @@ function App() {
   const [runtimeOverride, setRuntimeOverride] = useState<RuntimeOverride>("auto");
   const [form, setForm] = useState(settings);
   const [answer, setAnswer] = useState("");
+  const [navUrl, setNavUrl] = useState("");
 
   // The stored settings arrive asynchronously; adopt them until the user
   // starts editing, after which the form is theirs.
@@ -158,7 +157,7 @@ function App() {
         <div className="status-row">
           <span className={badgeClass}>{STATE_LABEL[state]}</span>
           <span className="panel__status-meta">
-            {round > 0 && <span className="meta">Round {round} of {MAX_ROUNDS}</span>}
+            {round > 0 && <span className="meta">Round {round}</span>}
             {runtime && <span className="meta">{runtime.mode}</span>}
             {planMeta && <span className="meta">{planMeta.providerId} · {planMeta.model}</span>}
           </span>
@@ -227,6 +226,39 @@ function App() {
             {state === "idle" ? "Start task" : "Start new task"}
           </button>
         </div>
+        {needsNavigation && (
+          <div className="notice notice--navigate">
+            <p>
+              Orka can't read this page. Chrome blocks every extension from acting on its built-in
+              pages — the new-tab page, Settings, the Web Store, and local files. Enter a web address
+              and Orka will open it in this tab, then start your task there.
+            </p>
+            <div className="value-row">
+              <input
+                type="url"
+                value={navUrl}
+                placeholder="https://example.com"
+                aria-label="Web address to open"
+                disabled={started}
+                onChange={(event) => setNavUrl(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && navUrl.trim() && task.trim()) {
+                    event.preventDefault();
+                    void startAtUrl(navUrl, task, runtimeOverride);
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="button button--primary"
+                disabled={started || navUrl.trim().length === 0 || task.trim().length === 0}
+                onClick={() => void startAtUrl(navUrl, task, runtimeOverride)}
+              >
+                Open &amp; start
+              </button>
+            </div>
+          </div>
+        )}
         <details className="drawer">
           <summary>Private values</summary>
           <div className="drawer__body">

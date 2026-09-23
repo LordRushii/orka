@@ -14,7 +14,7 @@
 
 - **Target browsers:** Chrome, Edge, and Brave first; Firefox later
 - **Extension format:** Manifest V3
-- **Permissions:** `activeTab`, `scripting`, `storage`; request site access only when a task begins
+- **Permissions:** `activeTab`, `scripting`, `storage`, plus a static `http(s)://*/*` host grant so tasks run on the current tab with no runtime prompt
 - **Capture:** `tabs.captureVisibleTab` through the active-tab permission
 - **Page context:** visible/interactable accessibility and DOM snapshot from a content script
 - **UI:** browser side panel with task state, approvals, audit view, provider selection, and Stop control

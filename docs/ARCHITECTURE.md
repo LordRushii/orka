@@ -86,8 +86,9 @@ only. Missing, hidden, disabled, moved, or duplicated targets are
 refused, and the run stops rather than trying the next step against a page it no longer understands.
 A target cited by a redaction placeholder (`[PHONE]`) is matched by role and box, because the live
 page necessarily still carries the real name.
-- **Bounded scope**: one active tab, no hidden or background-tab action, at most 6 rounds with at
-most 90 seconds of active work each (approval time excluded), and no automatic cross-origin
+- **Bounded scope**: one active tab, no hidden or background-tab action, no fixed round ceiling but
+at most 90 seconds of active work each round (approval time excluded, every round user-approved),
+and no automatic cross-origin
 continuation. Each round reads the page (snapshot only by default; see the vision-free fast path
 below), plans exactly one step, waits for approval, and runs that one step; the next round
 re-reads the page before it plans.

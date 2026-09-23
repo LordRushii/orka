@@ -28,6 +28,8 @@ export const EXTENSION_MESSAGE_TYPES = {
   CONFIRMATION_DECISION: "CONFIRMATION_DECISION",
   METRICS_REPORT: "METRICS_REPORT",
   GET_CAPTURE_AUTHORITY: "GET_CAPTURE_AUTHORITY",
+  MINT_CAPTURE_AUTHORITY: "MINT_CAPTURE_AUTHORITY",
+  NAVIGATE_ACTIVE_TAB: "NAVIGATE_ACTIVE_TAB",
   CAPTURE_REQUEST: "CAPTURE_REQUEST",
   SNAPSHOT_RESULT: "SNAPSHOT_RESULT",
   SNAPSHOT_FAILURE: "SNAPSHOT_FAILURE",
@@ -81,6 +83,32 @@ export type ConfirmationDecisionMessage = {
 
 export type GetCaptureAuthorityMessage = {
   type: "GET_CAPTURE_AUTHORITY";
+};
+
+/**
+ * Asks the background to mint a fresh capture authority against the active tab
+ * of the panel's own window, so a task can start on the current page without a
+ * toolbar reopen. The panel supplies only the `windowId`; the background
+ * resolves the tab itself, keeping the panel from ever naming its own target.
+ */
+export type MintCaptureAuthorityMessage = {
+  type: "MINT_CAPTURE_AUTHORITY";
+  windowId: number;
+};
+
+/**
+ * A rescue path for a tab Orka cannot read: Chrome's built-in pages (the
+ * new-tab page, settings, the Web Store, `file://`) are off-limits to every
+ * extension, so a task cannot start on one. Rather than dead-end, the panel
+ * offers to open a real web page here first. The background navigates the
+ * window's active tab to `url` (http(s) only), waits for the load, and mints a
+ * fresh authority against the page it landed on -- the same tab, now readable.
+ * The panel supplies only the `windowId`; the background resolves the tab.
+ */
+export type NavigateActiveTabMessage = {
+  type: "NAVIGATE_ACTIVE_TAB";
+  windowId: number;
+  url: string;
 };
 
 export type CaptureRequestMessage = {
@@ -247,6 +275,8 @@ export type ExtensionMessage =
   | ApprovePlanMessage
   | ConfirmationDecisionMessage
   | GetCaptureAuthorityMessage
+  | MintCaptureAuthorityMessage
+  | NavigateActiveTabMessage
   | CaptureRequestMessage
   | SnapshotResultMessage
   | SnapshotFailureMessage

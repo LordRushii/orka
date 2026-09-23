@@ -53,7 +53,7 @@ export function createCaptureAuthority(
 ): CaptureAuthority {
   const origin = urlOrigin(tab.url);
   if (!tab.id || tab.windowId === undefined || tab.windowId < 0 || !origin) {
-    throw new CaptureAuthorityError("Open a normal HTTP(S) page, then reopen Orka from the toolbar.");
+    throw new CaptureAuthorityError("Open a normal HTTP(S) page in this tab, then start the task.");
   }
   return { id, tabId: tab.id, windowId: tab.windowId, origin, issuedAt: now };
 }

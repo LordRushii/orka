@@ -12,7 +12,7 @@
 
 ## Required controls
 
-- Use `activeTab`, `scripting`, and `storage`; request host access only when the user begins a task on that site.
+- Ship with `activeTab`, `scripting`, `storage`, and a static grant of read/act access to normal web pages (`http(s)://*/*`) so a task starts on the current tab with no runtime prompt. Non-web pages (`chrome://`, the Web Store, `file://`, PDF viewer) stay out of reach, and the capture authority still pins each Task Session to the single tab it started on (see Action execution controls).
 - Do not use the Chromium debugger/CDP permission in V1.
 - All gateway communication uses HTTPS. LM Studio defaults to `127.0.0.1:1234` with authentication enabled where available.
 - The extension package pins model assets by version and SHA-256. Small face models ship with the extension; optional OCR models require approval, hash verification, and local caching.
@@ -28,7 +28,7 @@ Redaction is opaque and labelled by broad class. Never send originals, OCR fragm
 
 ## Action policy
 
-Low-risk navigation actions may run after a visible proposal. Typing, selection, submission, download, permission prompt, or cross-origin continuation requires confirmation. The extension stops after 6 rounds, once a round's 90 seconds of active work (capture, scan, plan, act) is spent, a policy violation, a privacy error, or the user pressing Stop. Time spent waiting for the user's approval is not counted against the round budget, and each round plans and runs only one step against a fresh capture.
+Low-risk navigation actions may run after a visible proposal. Typing, selection, submission, download, permission prompt, or cross-origin continuation requires confirmation. A session runs a round at a time with no fixed round ceiling; it ends when the planner emits `done`, a round's 90 seconds of active work (capture, scan, plan, act) is spent, a policy violation, a privacy error, a denied step, or the user pressing Stop. Because every round is individually approved by the user, the person driving the task bounds the session rather than a round counter. Time spent waiting for the user's approval is not counted against the round budget, and each round plans and runs only one step against a fresh capture.
 
 Most rounds are settled from the page's accessibility tree alone, so they capture **no screenshot at all**: the observation is the redacted snapshot, and neither OCR nor face detection runs because there are no pixels to read. A screenshot is captured only when a round genuinely needs to look at the page -- an "explain / describe / what is visible" task, or a step whose target the snapshot could not resolve. Redaction is not weakened on either path: a vision-free round produces no screenshot pixels whatsoever, and DOM text still passes the same deterministic detectors before anything leaves the extension. A vision round whose capture fails fails closed; it is never downgraded to a text-only round.
 

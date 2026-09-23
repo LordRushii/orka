@@ -61,13 +61,19 @@ Nothing above adds a new action type — the seven (`navigate`, `click`, `scroll
 
 ## 4. Budgets (Decision 1, from the execution prompt)
 
-- `MAX_ROUNDS_PER_SESSION = 6` — hard stop on round-trips, independent of `MAX_ACTIONS_PER_PLAN = 10`.
+- No fixed round ceiling. A session runs a round at a time until it ends for one of the reasons
+  below; `MAX_ACTIONS_PER_PLAN = 10` still caps a single plan. (`maxRounds` remains an opt-in
+  `TaskSession` option — tests set a finite cap — but the default is unlimited.)
 - Per-round machine budget = the existing 90 s value, but **reset each round** and clocking only
   capture+scan+plan+act — **not** time spent in `awaiting_approval` waiting on the human.
-- Session ends on: `done`, `ask_user`, a denial, 6 rounds, or a single round busting its own budget.
+- Session ends on: `done`, `ask_user`, a denial, a single round busting its own budget, or Stop.
+  Every round is user-approved, so the person driving the task bounds the session rather than a
+  round counter; a deterministic repeat-backstop rewrites a re-proposed fill of an already-settled
+  field into `done`.
 - This is a documented `SECURITY-PRIVACY.md` invariant: the copy changes from "10 actions / 90 s
-  total" to "≤6 rounds, ≤90 s active work per round, human time excluded," updated in the **same
-  commit** as the code across `SECURITY-PRIVACY.md`, `PRD.md`, `ARCHITECTURE.md`, and panel copy.
+  total" to "no fixed round cap, ≤90 s active work per round (human time excluded), every round
+  approved," updated in the **same commit** as the code across `SECURITY-PRIVACY.md`, `PRD.md`,
+  `ARCHITECTURE.md`, and panel copy.
 
 ## 5. Messaging (Decision 2, from the execution prompt)
 

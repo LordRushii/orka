@@ -4,7 +4,6 @@ import {
   ActionPlanSchema,
   CONTRACT_VERSION,
   InvalidTransitionError,
-  MAX_ROUNDS_PER_SESSION,
   SanitizationFailureSchema,
   SanitizedObservationSchema,
   TASK_STATES,
@@ -333,8 +332,14 @@ describe("TaskSession multi-round loop", () => {
     expect(session.roundCount).toBe(4);
   });
 
-  test("the default round cap is six", () => {
-    expect(MAX_ROUNDS_PER_SESSION).toBe(6);
+  test("a session has no round cap by default", () => {
+    const session = new TaskSession();
+    driveTo(session, "executing");
+    for (let i = 0; i < 50; i += 1) {
+      expect(session.startRound()).toEqual({ stopped: false });
+    }
+    expect(session.state).toBe("executing");
+    expect(session.roundCount).toBe(50);
   });
 
   test("round active time excludes time spent awaiting approval", () => {

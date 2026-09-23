@@ -27,8 +27,9 @@ import {
   validateCaptureAuthority,
   type CaptureAuthority,
   type CaptureAuthorityBrowser,
+  type CaptureAuthorityTab,
 } from "../shared/captureAuthority.ts";
-import { createCaptureAuthorityStore } from "../shared/captureAuthorityStore.ts";
+import { createCaptureAuthorityStore, type CaptureAuthorityResponse } from "../shared/captureAuthorityStore.ts";
 import { collectSafePageSnapshot } from "../shared/snapshot.ts";
 import {
   createBrowserImageEncoder,
@@ -151,6 +152,14 @@ type ActiveTask = {
    * sees what it already tried instead of re-proposing it (Phase 6).
    */
   priorActions: PriorActionSummary[];
+  /**
+   * Keys of the fields a `type`/`select` step has already filled successfully.
+   * The planner never sees the text it typed (values stay on the device), so a
+   * page looks unchanged after a fill and a stubborn model re-proposes filling
+   * the same field round after round. This lets `planRound` notice that repeat
+   * and finish cleanly instead. Memory only, gone when the run ends.
+   */
+  settledTargets: Set<string>;
   /** Private values for this task; memory only, cleared when the run ends. */
   sensitiveValues: SensitiveVariables;
   executor?: ActionExecutor;
@@ -504,6 +513,19 @@ function roundApprovalPort(task: ActiveTask): Promise<ApprovalDecision> {
 }
 
 /**
+ * A stable key for the field a `type`/`select` step fills, or null for actions
+ * that are legitimately repeatable (a `click` on "Next", a `scroll`). Prefers
+ * the element's `evidenceId`, which names one live element; without it, role +
+ * accessible name is enough to catch a redraft of the same field. It never
+ * carries the typed value -- only which field was touched.
+ */
+function settledTargetKey(action: Action): string | null {
+  if (action.type !== "type" && action.type !== "select") return null;
+  const { role, accessibleName, evidenceId } = action.target;
+  return evidenceId ? `id:${evidenceId}` : `rn:${role}\u0000${accessibleName}`;
+}
+
+/**
  * The loop's `executeStep` port: exactly one approved step, through the same
  * executor as before. Every per-action policy -- live-DOM re-resolution, the
  * confirmation port, origin and active-tab checks, the per-round budget -- is
@@ -570,6 +592,15 @@ async function executeRoundStep(task: ActiveTask, action: Action): Promise<StepR
       task.origin = landed;
       task.authority = { ...task.authority, origin: landed };
     }
+  }
+
+  // Remember which field a fill actually settled. The planner never sees the
+  // text we typed (values stay on the device), so a filled field looks empty
+  // to it and a stubborn model re-proposes the same fill round after round;
+  // `planRound` reads this set to rewrite that repeat into a clean `done`.
+  const settledKey = settledTargetKey(action);
+  if (settledKey && run.status === "completed" && run.outcome?.status === "success") {
+    task.settledTargets.add(settledKey);
   }
   return run;
 }
@@ -793,6 +824,135 @@ function captureAuthorityResponse() {
   return captureAuthorityStore.response();
 }
 
+/**
+ * Mints a fresh capture authority against the active tab of `windowId`. The
+ * background resolves the tab itself rather than trusting a panel-supplied id,
+ * so the panel can start a task on the current page without a toolbar reopen
+ * while the "one tab, chosen here" invariant still holds. A non-web active tab
+ * (chrome://, the Web Store, a PDF viewer) fails to mint and returns the reason.
+ */
+async function mintCaptureAuthorityForWindow(windowId: number): Promise<CaptureAuthorityResponse> {
+  captureAuthorityStore.clear();
+  let tab: CaptureAuthorityTab | undefined;
+  try {
+    tab = await captureBrowser().getActiveTab(windowId);
+  } catch (error) {
+    console.warn("Orka could not read the active tab:", safeErrorName(error));
+  }
+  if (!tab) {
+    return { ok: false, type: "ERROR", message: "Open a normal web page in this tab, then start the task." };
+  }
+  try {
+    captureAuthorityStore.mint(tab, crypto.randomUUID());
+  } catch (error) {
+    if (error instanceof CaptureAuthorityError) {
+      // The one reason this mint path fails is a tab whose URL has no http(s)
+      // origin -- a chrome:// page, the Web Store, a file://, the PDF viewer.
+      // Tag it so the panel can offer to open a real page here instead of
+      // showing a dead-end error.
+      return { ok: false, type: "ERROR", message: error.message, code: "NON_WEB_PAGE" };
+    }
+    throw error;
+  }
+  return captureAuthorityStore.response();
+}
+
+/** How long to wait for a rescue navigation to finish loading before giving up. */
+const NAVIGATE_LOAD_TIMEOUT_MS = 15_000;
+
+/**
+ * The rescue path for a non-web tab: navigate the window's active tab to a
+ * user-typed web page, wait for it to load, then mint against the page it
+ * landed on. Chrome's own pages stay unreachable (no extension can script
+ * them); this only helps when the user gives a real URL to open in their place.
+ */
+async function navigateActiveTabAndMint(
+  windowId: number,
+  rawUrl: string,
+): Promise<CaptureAuthorityResponse> {
+  const url = normalizeNavigableUrl(rawUrl);
+  if (!url) {
+    return { ok: false, type: "ERROR", message: "Enter a full web address, like https://example.com." };
+  }
+  captureAuthorityStore.clear();
+
+  let tab: CaptureAuthorityTab | undefined;
+  try {
+    tab = await captureBrowser().getActiveTab(windowId);
+  } catch (error) {
+    console.warn("Orka could not read the active tab:", safeErrorName(error));
+  }
+  if (typeof tab?.id !== "number") {
+    return { ok: false, type: "ERROR", message: "Open a normal browser window, then try again." };
+  }
+  const tabId = tab.id;
+
+  try {
+    await browser.tabs.update(tabId, { url });
+  } catch (error) {
+    console.warn("Orka could not navigate the active tab:", safeErrorName(error));
+    return { ok: false, type: "ERROR", message: "That page could not be opened. Check the address and try again." };
+  }
+
+  const loaded = await waitForTabLoad(tabId, url);
+  if (!loaded) {
+    return { ok: false, type: "ERROR", message: "The page did not finish loading. Try again once it settles." };
+  }
+
+  try {
+    captureAuthorityStore.mint(loaded, crypto.randomUUID());
+  } catch (error) {
+    if (error instanceof CaptureAuthorityError) {
+      return { ok: false, type: "ERROR", message: error.message, code: "NON_WEB_PAGE" };
+    }
+    throw error;
+  }
+  return captureAuthorityStore.response();
+}
+
+/**
+ * Accepts a user-typed address and returns its canonical http(s) form, or null
+ * for anything that is not a web URL. A bare `example.com` is treated as https.
+ */
+function normalizeNavigableUrl(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  if (!urlOrigin(candidate)) return undefined;
+  try {
+    return new URL(candidate).toString();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Polls the tab until it reports a completed load at an http(s) URL, or the
+ * timeout elapses. Returns the loaded tab, or undefined on timeout. Polling
+ * (rather than an `onUpdated` listener) keeps this self-contained in the
+ * service worker and needs no extra listener teardown.
+ */
+async function waitForTabLoad(
+  tabId: number,
+  expectedUrl: string,
+): Promise<CaptureAuthorityTab | undefined> {
+  const deadline = Date.now() + NAVIGATE_LOAD_TIMEOUT_MS;
+  const expectedOrigin = urlOrigin(expectedUrl);
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    let tab: CaptureAuthorityTab & { status?: string };
+    try {
+      tab = await browser.tabs.get(tabId);
+    } catch {
+      return undefined;
+    }
+    if (tab.status === "complete" && urlOrigin(tab.url) === expectedOrigin) {
+      return tab;
+    }
+  }
+  return undefined;
+}
+
 function takeCaptureAuthority(id: string): CaptureAuthority {
   try {
     // Reusable within its TTL: the live tab/origin/active-tab checks still run
@@ -960,7 +1120,28 @@ async function planRound(task: ActiveTask, observation: SanitizedObservation): P
     throw new CaptureFlowError("CAPTURE_FAILED", result.message);
   }
 
-  const step = result.plan.actions[0]!;
+  let step = result.plan.actions[0]!;
+  // Deterministic repeat-backstop. Because we never send the planner the text
+  // it already typed, a filled field looks empty to it, and a stubborn model
+  // can re-propose filling the same field to "reword" or "improve" a draft it
+  // cannot see -- the repetition the drafter showed. If this step targets a
+  // field a prior step already settled, the honest next move is to stop, so we
+  // rewrite it to `done`. That reuses the tested approval -> execute -> COMPLETE
+  // path (a loop-level short-circuit would strand the session in
+  // `awaiting_approval`, where COMPLETE is illegal). The user still approves the
+  // `done`, so nothing runs behind their back.
+  const repeatKey = settledTargetKey(step);
+  if (repeatKey && task.settledTargets.has(repeatKey)) {
+    step = {
+      type: "done",
+      risk: "low",
+      reason: "The requested field was already filled in an earlier step.",
+      summary:
+        step.type === "select"
+          ? "The selection was already made, so nothing more was changed."
+          : "The field was already filled, so nothing more was typed.",
+    };
+  }
   task.plan = { ...result.plan, actions: [step] };
   task.observation = observation;
   // The provider's own view of how long the model took, as distinct from the
@@ -1150,6 +1331,7 @@ async function startTask(message: StartTaskMessage): Promise<ExtensionResponse> 
     origin: authority.origin,
     cancelled: false,
     priorActions: [],
+    settledTargets: new Set<string>(),
     sensitiveValues: { ...privateValues.data },
     metrics: createMetricsRecorder(),
     modelManager: createPixelModelManager(),
@@ -1249,6 +1431,14 @@ export default defineBackground(() => {
     if (message.type === "GET_CAPTURE_AUTHORITY") {
       sendResponse(captureAuthorityResponse());
       return undefined;
+    }
+    if (message.type === "MINT_CAPTURE_AUTHORITY") {
+      void mintCaptureAuthorityForWindow(message.windowId).then(sendResponse);
+      return true;
+    }
+    if (message.type === "NAVIGATE_ACTIVE_TAB") {
+      void navigateActiveTabAndMint(message.windowId, message.url).then(sendResponse);
+      return true;
     }
     if (message.type === "START_TASK") {
       void startTask(message).then(sendResponse).catch((error: unknown) => {

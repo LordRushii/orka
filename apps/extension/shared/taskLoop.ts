@@ -108,8 +108,10 @@ export async function runTaskLoop(
   let visionRequired = options.visionRequired ?? false;
 
   while (true) {
-    // Round guard before each capture: increments the count and auto-stops the
-    // session once MAX_ROUNDS_PER_SESSION is hit.
+    // Counts the round for the panel's progress copy. With the default
+    // unlimited `maxRounds` this never stops; a finite cap (tests set one) is
+    // still honoured, and `done`, a denial, Stop, or the per-round budget end
+    // the loop instead.
     const round = session.startRound();
     if (round.stopped) {
       return {

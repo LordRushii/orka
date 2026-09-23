@@ -8,7 +8,7 @@ import {
 
 export type CaptureAuthorityResponse =
   | { ok: true; type: "CAPTURE_AUTHORITY"; authorityId: string }
-  | { ok: false; type: "ERROR"; message: string };
+  | { ok: false; type: "ERROR"; message: string; code?: "NON_WEB_PAGE" };
 
 /**
  * Holds the single toolbar-minted capture authority for the background service
