@@ -922,10 +922,17 @@ async function planRound(task: ActiveTask, observation: SanitizedObservation): P
 
   const controller = new AbortController();
   task.plannerAbort = controller;
+  // The opt-in rides to the gateway as a boolean on the observation, nothing
+  // more: it changes which system prompt the adapter builds, never any content.
+  // When off, the observation is sent unchanged so the wire shape is identical
+  // to every prior phase.
+  const outgoing = settings.allowDraftingMessages
+    ? { ...observation, allowDraftingMessages: true }
+    : observation;
   let result: PlannerResult;
   try {
     result = await task.metrics.measure("gateway", () =>
-      requestPlan({ settings, observation, signal: controller.signal }),
+      requestPlan({ settings, observation: outgoing, signal: controller.signal }),
     );
   } catch (error) {
     result = {

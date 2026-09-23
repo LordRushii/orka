@@ -1,7 +1,7 @@
 import type { ProviderId } from "@orka/contracts";
 import { postJson, probe, type FetchLike } from "./http";
 import { parseActionPlan } from "./parse";
-import { buildPlannerUserText, PLANNER_SYSTEM_PROMPT } from "./prompt";
+import { buildPlannerSystemPrompt, buildPlannerUserText } from "./prompt";
 import {
   providerFailure,
   type PlannerInput,
@@ -97,7 +97,7 @@ export function createOpenAiCompatibleAdapter(
         temperature: 0,
         max_tokens: options.maxTokens ?? 1200,
         messages: [
-          { role: "system", content: PLANNER_SYSTEM_PROMPT },
+          { role: "system", content: buildPlannerSystemPrompt(observation) },
           { role: "user", content: userContent },
         ],
       };

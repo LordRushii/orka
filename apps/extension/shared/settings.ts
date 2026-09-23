@@ -14,6 +14,13 @@ export type PlannerSettings = {
   providerId: ProviderId;
   /** Empty string means "use the adapter's configured default model". */
   model: string;
+  /**
+   * Opt-in messaging (Phase 9), off by default. When on, the planner may draft
+   * a message and propose sending it; a human still confirms every send on the
+   * rendered draft. Purely local intent -- it rides to the gateway as a boolean
+   * on the observation, never as message content.
+   */
+  allowDraftingMessages: boolean;
 };
 
 export const PLANNER_SETTINGS_KEY = "orka.planner.settings";
@@ -25,6 +32,8 @@ export const DEFAULT_PLANNER_SETTINGS: PlannerSettings = {
   // ever leaves the machine unless the operator switches to a cloud provider.
   providerId: "lmstudio",
   model: "",
+  // Drafting a message is a deliberate choice, never a default.
+  allowDraftingMessages: false,
 };
 
 export class GatewayUrlError extends Error {
@@ -66,6 +75,10 @@ const PlannerSettingsSchema = z
     gatewayToken: z.string().max(512),
     providerId: ProviderIdSchema,
     model: z.string().max(128),
+    // `.default(false)` so settings stored before Phase 9 (no such key) still
+    // parse cleanly and simply adopt the off default, rather than being thrown
+    // out and losing the user's gateway configuration.
+    allowDraftingMessages: z.boolean().default(false),
   })
   .strict();
 
@@ -91,6 +104,7 @@ export function validatePlannerSettings(value: unknown): PlannerSettings {
     gatewayToken: parsed.data.gatewayToken.trim(),
     providerId: parsed.data.providerId,
     model: parsed.data.model.trim(),
+    allowDraftingMessages: parsed.data.allowDraftingMessages,
   };
 }
 
@@ -113,7 +127,7 @@ export async function loadPlannerSettings(storage: StorageArea = area()): Promis
 }
 
 export async function savePlannerSettings(
-  settings: PlannerSettings,
+  settings: Omit<PlannerSettings, "allowDraftingMessages"> & { allowDraftingMessages?: boolean },
   storage: StorageArea = area(),
 ): Promise<PlannerSettings> {
   const validated = validatePlannerSettings(settings);

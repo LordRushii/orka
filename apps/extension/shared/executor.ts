@@ -601,6 +601,25 @@ export function createActionExecutor(deps: ExecutorDeps): ActionExecutor {
                 fail(action, index, decision.code ?? "BLOCKED_BY_POLICY", decision.reason);
                 break;
               }
+              // Sending, replying, or posting is out of scope unless the user
+              // turned on message drafting for this task. The system prompt
+              // already tells the planner that, but the prompt is advisory; this
+              // is the hard client-side gate, so a planner that ignores it (or a
+              // prompt-injection that talked it into a send) is still refused
+              // here rather than merely surfaced as one more thing to confirm.
+              if (
+                decision.decision === "confirm" &&
+                decision.kind === "send" &&
+                !context.observation.allowDraftingMessages
+              ) {
+                fail(
+                  action,
+                  index,
+                  "BLOCKED_BY_POLICY",
+                  `${decision.reason} Turn on "Allow drafting messages for my review." to let Orka do this.`,
+                );
+                break;
+              }
               if (
                 decision.decision === "confirm" &&
                 !(await confirmStep(action, index, decision.kind ?? "submit", decision.reason))

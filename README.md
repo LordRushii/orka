@@ -12,7 +12,8 @@ Raw screenshots, DOM values, credentials, and sensitive user inputs do not leave
 - Active tab only, during an explicit task session.
 - Safe tasks: open a site, explain a page, find/summarize public information, search/filter/navigate, and fill synthetic or non-sensitive forms.
 - Cloud default: `deepseek-v4-flash-vision-exp`; local reference: Qwen3-VL-4B-Instruct through LM Studio.
-- Never autonomous for irreversible actions. Messages, purchases, deletes, login/credential entry, payments, CAPTCHAs, and social posting are out of scope.
+- Never autonomous for irreversible actions. Purchases, deletes, login/credential entry, payments, and CAPTCHAs are out of scope.
+- Message drafting is opt-in (off by default) and always confirmed on the rendered draft: with it on, the planner may propose composing a reply and clicking a send-labelled control, but every send still requires a fresh human confirmation on the freshly re-rendered page.
 
 ## Workspace plan
 

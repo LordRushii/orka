@@ -95,7 +95,30 @@ describe("planner settings", () => {
       gatewayToken: "tok",
       providerId: "lmstudio",
       model: "qwen3-vl-4b-instruct",
+      // Absent in the form, so it lands on the off default rather than failing.
+      allowDraftingMessages: false,
     });
+  });
+
+  test("drafting messages is off by default and round-trips when turned on", async () => {
+    expect(DEFAULT_PLANNER_SETTINGS.allowDraftingMessages).toBe(false);
+    // Settings stored before this field existed still parse, adopting the off
+    // default instead of being discarded.
+    const legacy = parsePlannerSettings({
+      gatewayUrl: "https://gateway.example.com",
+      gatewayToken: "tok",
+      providerId: "lmstudio",
+      model: "",
+    });
+    expect(legacy.allowDraftingMessages).toBe(false);
+    // And an explicit opt-in survives a save/load round-trip.
+    const storage = fakeStorage();
+    const saved = await savePlannerSettings(
+      { ...DEFAULT_PLANNER_SETTINGS, gatewayUrl: "https://gateway.example.com", allowDraftingMessages: true },
+      storage,
+    );
+    expect(saved.allowDraftingMessages).toBe(true);
+    expect((await loadPlannerSettings(storage)).allowDraftingMessages).toBe(true);
   });
 
   test("a save/load round-trip stores a gateway token and nothing resembling a provider key", async () => {
@@ -113,10 +136,11 @@ describe("planner settings", () => {
     expect(await loadPlannerSettings(storage)).toEqual(saved);
 
     // Provider credentials live in the gateway environment; the browser holds
-    // only the session token, so the stored blob has exactly four fields.
+    // only the session token plus the local opt-in flags, so the stored blob is
+    // exactly these five fields and nothing resembling a provider key.
     const stored = storage.store[PLANNER_SETTINGS_KEY] as Record<string, unknown>;
     expect(Object.keys(stored).sort())
-      .toEqual(["gatewayToken", "gatewayUrl", "model", "providerId"]);
+      .toEqual(["allowDraftingMessages", "gatewayToken", "gatewayUrl", "model", "providerId"]);
   });
 
   test("saving a remote http gateway is refused before anything is written", async () => {

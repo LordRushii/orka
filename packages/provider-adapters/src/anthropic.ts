@@ -1,6 +1,6 @@
 import { postJson, type FetchLike } from "./http";
 import { parseActionPlan } from "./parse";
-import { buildPlannerUserText, PLANNER_SYSTEM_PROMPT } from "./prompt";
+import { buildPlannerSystemPrompt, buildPlannerUserText } from "./prompt";
 import {
   providerFailure,
   type PlannerInput,
@@ -68,7 +68,7 @@ export function createAnthropicAdapter(options: AnthropicOptions): ProviderAdapt
           model,
           max_tokens: options.maxTokens ?? 1200,
           temperature: 0,
-          system: PLANNER_SYSTEM_PROMPT,
+          system: buildPlannerSystemPrompt(observation),
           messages: [{ role: "user", content }],
         },
         signal,

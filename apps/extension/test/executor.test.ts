@@ -267,6 +267,8 @@ function observationFor(
     sensitiveIds?: string[];
     /** Overrides the ids the observation carries, to model a plan that lies. */
     evidenceIds?: string[];
+    /** Mirrors the user's opt-in; the executor hard-gates sends on it. */
+    allowDraftingMessages?: boolean;
   } = {},
 ): SanitizedObservation {
   const sensitiveIds = options.sensitiveIds ?? [];
@@ -301,6 +303,7 @@ function observationFor(
     accessibilitySnapshot: snapshot,
     redactionSummary: [],
     priorActions: [],
+    ...(options.allowDraftingMessages ? { allowDraftingMessages: true } : {}),
   };
 }
 
@@ -334,6 +337,8 @@ async function runPlan(
     observation?: SanitizedObservation;
     session?: TaskSession;
     origin?: string;
+    /** Sets the opt-in on the default observation when none is supplied. */
+    allowDraftingMessages?: boolean;
     onStart?: (executor: ReturnType<typeof createActionExecutor>) => void;
   } = {},
 ): Promise<Harness> {
@@ -354,7 +359,9 @@ async function runPlan(
 
   const run = await executor.execute(plan, {
     taskId: TASK_ID,
-    observation: options.observation ?? observationFor(plan),
+    observation:
+      options.observation ??
+      observationFor(plan, { allowDraftingMessages: options.allowDraftingMessages }),
     tabId: TAB_ID,
     windowId: WINDOW_ID,
     origin: options.origin ?? ORIGIN,
@@ -1075,5 +1082,183 @@ describe("executor: questions and hostile pages", () => {
     // Ordinal 1 is the visible one, because the hidden one cannot match.
     expect(page.calls).toContain("click:1");
     expect(harness.run.status).toBe("completed");
+  });
+});
+
+describe("executor: messaging draft-and-send (Phase 9)", () => {
+  /*
+   * Phase 9 turns messaging on only in the planner's prompt (behind the user's
+   * own opt-in). The executor is deliberately unchanged: a send-labelled control
+   * is still `confirm`/`send`, never `allow`, so the setting can only let the
+   * planner *propose* a send -- it can never let one execute without a fresh
+   * human confirmation on the target the live page actually shows. These tests
+   * pin that the gate holds regardless of the setting.
+   */
+  const REPLY_BODY = "Hi Dana, Thursday at 3pm works for me. See you then.";
+  const replyBox = { x: 24, y: 256, width: 96, height: 36 };
+  const bodyBox = { x: 24, y: 326, width: 560, height: 180 };
+  const sendBox = { x: 24, y: 518, width: 80, height: 36 };
+
+  const replyButton = candidate({ accessibleName: "Reply", box: replyBox });
+  const bodyField = candidate({
+    role: "textbox",
+    accessibleName: "Message body",
+    tag: "TEXTAREA",
+    editable: true,
+    inForm: true,
+    box: bodyBox,
+  });
+  const sendButton = candidate({ accessibleName: "Send", inForm: true, box: sendBox });
+
+  const clickReply: Action = {
+    type: "click",
+    reason: "Open the reply composer.",
+    risk: "medium",
+    target: target({ accessibleName: "Reply", box: replyBox }),
+  };
+  const typeBody: Action = {
+    type: "type",
+    reason: "Draft the reply from the meeting request.",
+    risk: "medium",
+    target: target({ role: "textbox", accessibleName: "Message body", box: bodyBox }),
+    value: REPLY_BODY,
+  };
+  const clickSend: Action = {
+    type: "click",
+    reason: "Send the reply.",
+    risk: "medium",
+    target: target({ accessibleName: "Send", box: sendBox }),
+  };
+
+  test("a send-labelled click is classified `send` and fires only after a confirmation", async () => {
+    const page = fakePage([sendButton]);
+    const harness = await runPlan(planOf(clickSend, DONE), {
+      page,
+      decisions: [true],
+      allowDraftingMessages: true,
+    });
+
+    expect(harness.approvals.requests).toHaveLength(1);
+    expect(harness.approvals.requests[0]).toMatchObject({ kind: "confirm", confirmation: "send" });
+    expect(harness.events.some((event) => event.type === "CONFIRMATION_REQUEST")).toBe(true);
+    expect(harness.run.status).toBe("completed");
+    expect(page.calls.filter((call) => call.startsWith("click:"))).toHaveLength(1);
+  });
+
+  test("opening the reply is itself a send-classified confirmation, not a plain click", async () => {
+    const page = fakePage([replyButton]);
+    const harness = await runPlan(planOf(clickReply, DONE), {
+      page,
+      decisions: [true],
+      allowDraftingMessages: true,
+    });
+
+    expect(harness.approvals.requests[0]).toMatchObject({ kind: "confirm", confirmation: "send" });
+    expect(harness.run.status).toBe("completed");
+  });
+
+  test("a declined send stops the run and never reaches the page", async () => {
+    const page = fakePage([sendButton]);
+    const harness = await runPlan(planOf(clickSend, DONE), {
+      page,
+      decisions: [false],
+      allowDraftingMessages: true,
+    });
+
+    expect(harness.run.status).toBe("stopped");
+    expect(harness.run.stopReason).toBe("denied");
+    expect(outcomeCodes(harness)).toEqual(["NOT_CONFIRMED", "SKIPPED_AFTER_TERMINAL"]);
+    expect(page.calls.filter((call) => call.startsWith("click:"))).toHaveLength(0);
+  });
+
+  test("a panel that cannot answer is never read as consent to send", async () => {
+    const page = fakePage([sendButton]);
+    const harness = await runPlan(planOf(clickSend, DONE), {
+      page,
+      decisions: ["throw"],
+      allowDraftingMessages: true,
+    });
+
+    expect(harness.run.status).toBe("stopped");
+    expect(harness.run.stopReason).toBe("denied");
+    expect(outcomeCodes(harness)[0]).toBe("NOT_CONFIRMED");
+    expect(page.calls.filter((call) => call.startsWith("click:"))).toHaveLength(0);
+  });
+
+  test("a send cannot be fast-pathed at a stale location: it is re-located on the live page first", async () => {
+    // The plan and the observation the user approved agree on where Send was.
+    // The live page has re-rendered with Send moved far down. The send is not
+    // fired at the plan's remembered coordinates -- it is resolved against the
+    // freshly rendered page, drifts, and is refused before the user is even
+    // asked to confirm. There is no path from "the plan says Send is here" to a
+    // click that skips the live check.
+    const moved = candidate({ accessibleName: "Send", inForm: true, box: { x: 24, y: 900, width: 80, height: 36 } });
+    const page = fakePage([moved]);
+    const harness = await runPlan(planOf(clickSend, DONE), {
+      page,
+      decisions: [true],
+      allowDraftingMessages: true,
+    });
+
+    expect(harness.run.status).toBe("failed");
+    expect(harness.run.failure?.code).toBe("TARGET_DRIFTED");
+    expect(outcomeCodes(harness)[0]).toBe("TARGET_DRIFTED");
+    // The live page was consulted (locate ran), but the send never fired and no
+    // confirmation was ever raised for a target that was not really there.
+    expect(page.calls.some((call) => call.startsWith("locate:"))).toBe(true);
+    expect(page.calls.filter((call) => call.startsWith("click:"))).toHaveLength(0);
+    expect(harness.approvals.requests).toHaveLength(0);
+  });
+
+  test("the reference flow takes two separate confirmations -- open reply, then send -- each on the page as re-rendered", async () => {
+    // The composer does not exist until Reply is clicked, mirroring the
+    // synthetic fixture: the body field and Send button appear only after the
+    // page re-renders. So each send-classified step is confirmed against what
+    // is actually on screen at that moment, and the draft's body is prose the
+    // agent supplies -- not a value read back off the hostile page.
+    const page = fakePage([replyButton]);
+    const realClick = page.port.click;
+    page.port.click = async (tabId, tgt) => {
+      const result = await realClick(tabId, tgt);
+      // Clicking Reply reveals the composer on the next render.
+      if (page.candidates.some((entry) => entry.accessibleName === "Reply")) {
+        page.setCandidates([bodyField, sendButton]);
+      }
+      return result;
+    };
+
+    const harness = await runPlan(planOf(clickReply, typeBody, clickSend, DONE), {
+      page,
+      decisions: [true, true, true],
+      allowDraftingMessages: true,
+    });
+
+    expect(harness.run.status).toBe("completed");
+    // Open-reply (send) -> draft (type) -> send (send): two independent human
+    // confirmations gate the two send-classified steps.
+    const confirmations = harness.approvals.requests.map(
+      (request) => request.kind === "confirm" && request.confirmation,
+    );
+    expect(confirmations).toEqual(["send", "type", "send"]);
+    expect(page.calls.filter((call) => call.startsWith("click:"))).toHaveLength(2);
+    expect(page.received).toEqual([REPLY_BODY]);
+  });
+
+  test("with drafting off, a send-labelled click is refused outright and never asks or fires", async () => {
+    // The opt-in is the hard gate, not just prompt guidance: even if a planner
+    // (or a prompt-injected one) emits a send while messaging is off, the
+    // executor blocks it as policy rather than surfacing it as a confirmation.
+    const page = fakePage([sendButton]);
+    const harness = await runPlan(planOf(clickSend, DONE), {
+      page,
+      decisions: [true],
+      allowDraftingMessages: false,
+    });
+
+    expect(harness.run.status).toBe("failed");
+    expect(harness.run.failure?.code).toBe("BLOCKED_BY_POLICY");
+    expect(outcomeCodes(harness)[0]).toBe("BLOCKED_BY_POLICY");
+    expect(harness.approvals.requests).toHaveLength(0);
+    expect(page.calls.filter((call) => call.startsWith("click:"))).toHaveLength(0);
   });
 });

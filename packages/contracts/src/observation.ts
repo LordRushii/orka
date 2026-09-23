@@ -127,6 +127,15 @@ export const SanitizedObservationSchema = z
     accessibilitySnapshot: z.array(AccessibilityNodeSchema).max(500),
     redactionSummary: z.array(RedactionSummaryEntrySchema).max(50),
     priorActions: z.array(PriorActionSummarySchema).max(10),
+    /**
+     * Opt-in from the user's own device (Phase 9): when true, the planner may
+     * draft a message and propose sending it. Off/absent keeps the blanket
+     * messaging refusal. It is a boolean intent, never content, so it carries
+     * nothing derived from the page and does not weaken the closed shape. The
+     * executor's `confirm` on a send is unaffected either way -- this flag only
+     * governs what the planner may *propose*.
+     */
+    allowDraftingMessages: z.boolean().optional(),
   })
   .strict();
 export type SanitizedObservation = z.infer<typeof SanitizedObservationSchema>;

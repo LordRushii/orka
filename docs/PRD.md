@@ -29,7 +29,8 @@ The On-Device Privacy Browser Agent is a browser extension that locally captures
 
 - Whole desktop capture, background tab capture, Firefox release support, and mobile browsers.
 - Password-manager features or persistent sensitive-profile storage.
-- Financial, purchase, delete, messaging, posting, CAPTCHA, bulk scraping, or authentication automation.
+- Financial, purchase, delete, posting, CAPTCHA, bulk scraping, or authentication automation.
+- Messaging is opt-in (off by default) and always confirmed on the rendered draft: when enabled, the planner may compose a reply and propose a send-labelled click, but every send still requires a fresh human confirmation on the re-rendered page — it is never downgraded to an automatic action.
 - Guaranteeing perfect PII recognition. The system makes a best-effort local-redaction claim and fails closed if its required privacy stages fail.
 
 ## Success criteria

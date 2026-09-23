@@ -4,7 +4,7 @@
 
 export * from "./types";
 export { parseActionPlan, type ParsedPlan } from "./parse";
-export { PLANNER_SYSTEM_PROMPT, buildPlannerUserText } from "./prompt";
+export { PLANNER_SYSTEM_PROMPT, buildPlannerSystemPrompt, buildPlannerUserText } from "./prompt";
 export { postJson, probe, type FetchLike, type HttpJsonResult } from "./http";
 export {
   createOpenAiCompatibleAdapter,

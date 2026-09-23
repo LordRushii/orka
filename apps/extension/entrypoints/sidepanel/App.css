@@ -322,6 +322,25 @@
   opacity: 0.6;
 }
 
+/* A toggle reads left-to-right, box then label, not stacked like a text field. */
+.field--checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.field--checkbox input {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.field--checkbox .field__label {
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 0.82rem;
+  color: #e6e6e6;
+}
+
 .notice {
   margin: 0;
   padding: 8px 10px;

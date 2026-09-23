@@ -270,6 +270,32 @@ function App() {
               placeholder="Provider default"
             />
           </label>
+          <label className="field field--checkbox">
+            <input
+              type="checkbox"
+              checked={form.allowDraftingMessages}
+              disabled={started}
+              onChange={(event) => {
+                const next = { ...form, allowDraftingMessages: event.target.checked };
+                const previous = form;
+                setForm(next);
+                // This toggle gates a security-relevant capability, so it must
+                // not appear to take effect when the save fails: saveSettings
+                // returns false (it does not throw) if the gateway permission
+                // or contract check refuses, in which case storage keeps the
+                // old value the background reads. Roll the checkbox back so the
+                // visible state never claims more than what is persisted.
+                void saveSettings(next).then((ok) => {
+                  if (!ok) setForm(previous);
+                });
+              }}
+            />
+            <span className="field__label">Allow drafting messages for my review.</span>
+          </label>
+          <p className="panel__footnote">
+            Off by default. When on, Orka may draft a message and propose sending it -- you still
+            confirm every send on the fully rendered draft.
+          </p>
           <div className="card--actions">
             <button type="button" className="button button--primary" onClick={() => void saveSettings(form)}>
               Save
