@@ -122,6 +122,15 @@ describe("sanitize: OCR and face detection run concurrently (Fix 1)", () => {
       },
     });
 
+    // Measure the same two stages back-to-back in *this* run, so the
+    // comparison is relative. An absolute bound ("under 140ms") is a coin flip
+    // on a loaded box: the concurrent run can overshoot it while still being
+    // far cheaper than the sequential one, which is the property under test.
+    const sequentialStartedAt = Date.now();
+    await sleep(STAGE_MS);
+    await sleep(STAGE_MS);
+    const sequential = Date.now() - sequentialStartedAt;
+
     const startedAt = Date.now();
     const result = await sanitize(input(), PROFILE, depsForRun);
     const elapsed = Date.now() - startedAt;
@@ -131,9 +140,10 @@ describe("sanitize: OCR and face detection run concurrently (Fix 1)", () => {
     // Both stages really did run, and each took about a full stage.
     expect(result.localAudit.timings.ocrMs).toBeGreaterThanOrEqual(STAGE_MS - 20);
     expect(result.localAudit.timings.faceMs).toBeGreaterThanOrEqual(STAGE_MS - 20);
-    // Sequential execution would cost ~2 x STAGE_MS. Allow generous slack for
-    // a loaded CI box, but stay well under the sequential floor.
-    expect(elapsed).toBeLessThan(STAGE_MS * 2 - 40);
+    // Sequential execution would cost ~2 x STAGE_MS, which is what the measured
+    // baseline above is. Concurrency should land near half of it; the slack is
+    // for the merge/encode work that follows both stages.
+    expect(elapsed).toBeLessThan(sequential * 0.75);
   });
 
   test("either stage failing still fails the whole scan closed", async () => {
