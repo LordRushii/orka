@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type Action,
   type ActionOutcome,
@@ -32,6 +32,13 @@ import {
   emptyPrivateValueRow,
   type PrivateValueRow,
 } from "../../shared/privateValues.ts";
+import {
+  appendUserAnswer,
+  appendUserDecision,
+  appendUserTask,
+  reduceTranscript,
+  type ChatTurn,
+} from "../../shared/chatTranscript.ts";
 import type { LocalMetrics } from "../../shared/metrics.ts";
 import type { OutboundView } from "../../shared/outboundView.ts";
 import { DEFAULT_PLANNER_SETTINGS, type PlannerSettings } from "../../shared/settings.ts";
@@ -134,6 +141,19 @@ export function useTaskSession() {
   const [state, setState] = useState<TaskState>("idle");
   /** Which multi-round round is in flight, for the panel's progress copy. */
   const [round, setRound] = useState(0);
+  /**
+   * The conversation, as a view over the same events the state machine handles
+   * (Phase 8). `TaskSession` still decides what may happen; this only records
+   * what was said, and it is dropped with the session so a drafted private
+   * value cannot outlive the run it belonged to.
+   */
+  const [transcript, setTranscript] = useState<ChatTurn[]>([]);
+  /**
+   * The round the next event belongs to. `PLAN_RESULT` carries no round, and
+   * this listener is attached once so it can never read fresh React state --
+   * a ref is the one place the round can be read reliably here.
+   */
+  const roundRef = useRef(1);
   const [runtime, setRuntime] = useState<TaskStateMessage["runtime"]>();
   const [audit, setAudit] = useState<LocalAuditView>();
   const [observation, setObservation] = useState<SanitizedObservation>();
@@ -166,6 +186,11 @@ export function useTaskSession() {
     const listener = (message: unknown) => {
       if (!message || typeof message !== "object" || !("type" in message)) return;
       const event = message as ExtensionMessage;
+      if (event.type === "ROUND_PROGRESS") roundRef.current = event.round;
+      // Read the round now, not when React processes the update: the ref may
+      // have moved on by then and the turn would carry the wrong round.
+      const context = { round: roundRef.current };
+      setTranscript((previous) => reduceTranscript(previous, event, context));
       if (isTaskStateMessage(event)) {
         setTaskId(event.taskId);
         setState(event.state);
@@ -254,12 +279,15 @@ export function useTaskSession() {
         setPending(undefined);
         setOutbound(undefined);
         setRound(0);
+        roundRef.current = 1;
         setPrivateValues([emptyPrivateValueRow()]);
         setDeclaredValueNames([]);
       } else if (isAuditClosed(event)) {
         setTaskId(null);
         setState("idle");
         setRound(0);
+        roundRef.current = 1;
+        setTranscript([]);
         setAudit(undefined);
         setObservation(undefined);
         setFailure(undefined);
@@ -333,6 +361,10 @@ export function useTaskSession() {
       // second copy of them -- only their names, so it can explain the plan.
       setDeclaredValueNames(Object.keys(collected.values));
       setPrivateValues([emptyPrivateValueRow()]);
+      // A new task is a new conversation: the previous session's turns go with
+      // its audit, so a drafted value cannot linger in a closed run's thread.
+      roundRef.current = 1;
+      setTranscript(appendUserTask([], task));
       setTaskId(nextTaskId);
       return true;
     },
@@ -371,6 +403,7 @@ export function useTaskSession() {
       setRequestError(response?.message ?? "That plan could not be started.");
       return false;
     }
+    setTranscript((previous) => appendUserDecision(previous, true));
     return true;
   }, [taskId]);
 
@@ -385,12 +418,24 @@ export function useTaskSession() {
         approved,
         ...(answer === undefined ? {} : { answer }),
       };
+      const deciding = pending;
       setPending(undefined);
       const response = await browser.runtime.sendMessage(message);
       if (!response?.ok) {
         setRequestError(response?.message ?? "That decision could not be delivered.");
         return false;
       }
+      // The user's own words for what they just decided, written into the
+      // thread they are reading -- a decision belongs next to the prompt it
+      // answered, not only in the run log.
+      setTranscript((previous) => {
+        if (deciding.kind === "confirm") {
+          return appendUserDecision(previous, approved, approved ? "Allowed once." : "Denied and stopped.");
+        }
+        return approved
+          ? appendUserAnswer(previous, answer ?? "")
+          : appendUserDecision(previous, false, "Stopped here.");
+      });
       return true;
     },
     [pending, taskId],
@@ -453,6 +498,7 @@ export function useTaskSession() {
       settings,
       providers,
       gatewayStatus,
+      transcript,
       outcomes,
       pending,
       run,
@@ -485,6 +531,7 @@ export function useTaskSession() {
       settings,
       providers,
       gatewayStatus,
+      transcript,
       outcomes,
       pending,
       run,
