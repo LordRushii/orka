@@ -8,7 +8,7 @@
   "byCategory": {
     "002-embedded-image-text": {
       "recall": 1.0,
-      "note": "Both the heading email and the thumbnail email must be found; this fixture is the guard on the tile budget."
+      "note": "The heading email and all four runs of the small-text gradient (8/10/12/16px) must be found. This fixture is the guard on the tile budget, and the 8px run is its floor: `benchmarkCorpus.test.ts` also asserts that a cut budget (maxTiles 2) drops this recall to 0.8, so a silent recall trade is impossible."
     }
   }
 }

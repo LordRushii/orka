@@ -8,6 +8,7 @@ import { scoreDetections, type GroundTruthRegion } from "../src/benchmark/score"
 import { pixelScanBudget } from "../src/policy";
 import type { Box, Detection, RasterImage, RuntimeProfile, SafePageSnapshot } from "../src/types";
 import type { OcrToken, TextRecognizer } from "../src/pixel/types";
+import type { TilePlanOptions } from "../src/pixel/tiles";
 
 /**
  * The Phase 7 accuracy gate (docs2/03-pii-engine-accuracy.md Steps 1–3).
@@ -157,19 +158,35 @@ const FIXTURE_001: Fixture = {
   ],
 };
 
+/**
+ * The small-text gradient. Four runs of the same kind of PII at 8, 10, 12 and
+ * 16px sit in the region a tile covers at *every* budget, so the only variable
+ * across budgets is resolution, never coverage. The 8px run is the floor: it
+ * resolves at exactly the recognizer's minimum on a native tile, so a tile
+ * budget that lowers resolution below native loses it and moves the metric.
+ * Without this gradient the fixture could not bound a tile cut at all -- see
+ * the "bounds a tile-budget cut" test below.
+ */
+const GRADIENT_RUNS: Array<{ text: string; colour: [number, number, number]; box: Box }> = [
+  { text: "ops@example.com", colour: [255, 0, 255], box: { x: 120, y: 520, width: 180, height: 8 } },
+  { text: "jane.doe@example.com", colour: [0, 255, 0], box: { x: 1430, y: 815, width: 180, height: 10 } },
+  { text: "support@example.com", colour: [0, 255, 255], box: { x: 120, y: 620, width: 180, height: 12 } },
+  { text: "billing@example.com", colour: [255, 128, 0], box: { x: 120, y: 720, width: 180, height: 16 } },
+];
+
 const FIXTURE_002: Fixture = {
   name: "002-embedded-image-text",
   capture: (() => {
     const image = blankCapture(1920, 1080);
     paint(image, { text: "Contact jane.doe@example.com", colour: [...EMAIL], box: { x: 120, y: 140, width: 460, height: 32 } });
-    paint(image, { text: "jane.doe@example.com", colour: [0, 255, 0], box: { x: 1430, y: 815, width: 180, height: 10 } });
+    for (const run of GRADIENT_RUNS) paint(image, run);
     return image;
   })(),
   snapshot: { elements: [], textNodes: [] },
   groundTruth: readGroundTruth("002-embedded-image-text"),
   painted: [
     { text: "Contact jane.doe@example.com", colour: [...EMAIL], box: { x: 120, y: 140, width: 460, height: 32 } },
-    { text: "jane.doe@example.com", colour: [0, 255, 0], box: { x: 1430, y: 815, width: 180, height: 10 } },
+    ...GRADIENT_RUNS,
   ],
 };
 
@@ -240,14 +257,17 @@ function readGroundTruth(name: string): GroundTruthRegion[] {
  * detectors, the tiled OCR passes, the face path, and the merge -- all exactly
  * as `sanitize` runs them, scored before the observation contract wraps it.
  */
-async function scoreFixture(fixture: Fixture): Promise<{
+async function scoreFixture(
+  fixture: Fixture,
+  budget: TilePlanOptions = pixelScanBudget(PROFILE.mode),
+): Promise<{
   detections: Detection[];
   redactionMap: ReturnType<typeof mergeDetections>;
 }> {
   const domDetections = runDomDetectors(fixture.snapshot);
-  const recognizer = syntheticRecognizer(fixture.painted, pixelScanBudget(PROFILE.mode).nativeSideLength);
+  const recognizer = syntheticRecognizer(fixture.painted, budget.nativeSideLength);
   const ocrDetections = await runOcrDetection(recognizer, fixture.capture, {
-    tiling: pixelScanBudget(PROFILE.mode),
+    tiling: budget,
   });
   const faceDetections = faceDetectionsFor(fixture);
 
@@ -301,6 +321,25 @@ describe("benchmark corpus: the accuracy gate", () => {
     // Both passes see the heading; only the tiled pass resolves the thumbnail.
     expect(fullPass.length).toBeGreaterThanOrEqual(1);
     expect(tiledPass.length).toBeGreaterThan(fullPass.length);
+  });
+
+  test("the gate bounds a tile-budget cut: lowering the budget costs this fixture recall", async () => {
+    // The acceptance for a tile-budget change is that the corpus gate *bounds*
+    // it. That is a property of this harness, so it is asserted, not assumed:
+    // without the small-text gradient below a 3x tile cut moved no metric at
+    // all, because the single thumbnail landed exactly on the resolvable
+    // boundary and survived it.
+    const thorough = scoreDetections(
+      results.get(FIXTURE_002.name)!.detections,
+      FIXTURE_002.groundTruth,
+      results.get(FIXTURE_002.name)!.redactionMap,
+    );
+    // `maxTiles: 2` makes the planner grow tiles past native resolution.
+    const cut = await scoreFixture(FIXTURE_002, { ...pixelScanBudget(PROFILE.mode), maxTiles: 2 });
+    const cutScores = scoreDetections(cut.detections, FIXTURE_002.groundTruth, cut.redactionMap);
+
+    expect(thorough.overall.recall).toBeGreaterThanOrEqual(0.999);
+    expect(cutScores.overall.recall).toBeLessThan(thorough.overall.recall);
   });
 
   test("no metric drops below the checked-in baseline", () => {

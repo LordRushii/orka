@@ -52,7 +52,7 @@ The project uses deep modules: callers use small, stable interfaces while the co
 6. Create the size-capped `SanitizedObservation`; keep the detailed local map only in memory.
 7. If a required detector errors, times out, or is below its confidence policy, fail closed and do not call the gateway. A screenshot-bearing round that cannot be captured fails closed too, rather than silently proceeding without the pixels it asked for.
 
-Speed notes (docs2/02-pii-engine-speed.md): OCR and face detection run **concurrently** on their separate workers, so a scan pays `max(t(OCR), t(face))` rather than their sum; the pixel workers compile their ONNX graphs **once per session**, not per round; and each worker reports the execution provider it actually bound, so a silent WebGPU→WASM fallback is visible in the audit panel instead of being claimed away. Every scan records measured spans (`SanitizationTimings`) on the local-only audit, and the corpus regression gate bounds any tile-budget change: recall cannot be traded for latency without the test going red.
+Speed notes (docs2/02-pii-engine-speed.md): OCR and face detection run **concurrently** on their separate workers, so a scan pays `max(t(OCR), t(face))` rather than their sum; the pixel workers compile their ONNX graphs **once per session**, not per round; and each worker reports the execution provider it actually bound, so a silent WebGPU→WASM fallback is visible in the audit panel instead of being claimed away. Every scan records measured spans (`SanitizationTimings`) on the local-only audit, and the corpus regression gate bounds any tile-budget change: recall cannot be traded for latency without the test going red. That bound is asserted rather than assumed -- the harness runs its small-text fixture again at a cut budget and fails if recall *stops* falling (`maxTiles` 8 keeps its 8px text; 2 costs it). Captures are **device-pixel** (`tabs.captureVisibleTab`), so a hi-DPI page's tiled pass is load-bearing detail rather than redundancy, and downscaling the capture to the detector budget is not a safe way to remove it.
 
 ## Planner protocol
 
@@ -133,7 +133,10 @@ checked-in synthetic corpus (`packages/privacy-engine/fixtures/benchmark-corpus/
 ground truth and an IoU scoring harness, so PII recall/precision and redaction coverage are now
 **measured, regression-gated numbers** (`benchmarkCorpus.test.ts` fails if any metric drops below the
 checked-in baseline). The panel still marks them conservatively; the corpus is a local benchmark over
-synthetic pages, not a live measurement. Visual context remains not measurable locally, and
+synthetic pages, not a live measurement. It also proves its own sensitivity: the tile budget is only
+"bounded" if cutting it moves a metric, so the harness asserts that cutting `maxTiles` to 2 costs its
+8px small-text run. Speed changes measured on real hardware still come from `SanitizationTimings` in
+the audit panel, because a synthetic recognizer cannot produce an honest wall clock. Visual context remains not measurable locally, and
 `SIH_WEIGHTS` carries a `measurableLocally` flag for exactly this reason.
 
 `docs/PHASE-5-DEMO.md` is the runbook; `docs/PHASE-5-HARDENING.md` maps each hardening item to the

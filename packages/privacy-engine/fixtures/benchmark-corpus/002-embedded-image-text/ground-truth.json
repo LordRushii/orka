@@ -10,11 +10,26 @@
     },
     {
       "category": "EMAIL",
+      "box": { "x": 120, "y": 520, "width": 180, "height": 8 },
+      "note": "The gradient's floor: 8px text that the native-resolution tile pass resolves at exactly the recognizer's resolvable minimum. Any reduction in tile resolution drops this region, which is why it is here -- a tile-budget cut that costs small-text recall cannot pass unnoticed."
+    },
+    {
+      "category": "EMAIL",
+      "box": { "x": 120, "y": 620, "width": 180, "height": 12 },
+      "note": "Gradient midpoint. Survives a modest tile-resolution reduction, so the fixture still reports *which* sizes a cut costs, not just that something broke."
+    },
+    {
+      "category": "EMAIL",
+      "box": { "x": 120, "y": 720, "width": 180, "height": 16 },
+      "note": "Largest gradient run. Big enough that the full-image pass finds it too, so the gradient's upper end is not tile-dependent -- it exists to keep the failure attributable to resolution alone."
+    },
+    {
+      "category": "EMAIL",
       "box": { "x": 1430, "y": 815, "width": 180, "height": 10 },
-      "note": "Text baked into a small embedded thumbnail. THIS is the case the tiled OCR pass exists for: the full-image pass downsamples it below resolvable size, so only the native-resolution tile pass can find it. If the tile budget drops, this recall figure is what goes red."
+      "note": "Text baked into a small embedded thumbnail. THIS is the case the tiled OCR pass exists for: the full-image pass downsamples it below resolvable size, so only the native-resolution tile pass can find it."
     }
   ],
   "documentedText": {
-    "EMAIL": "jane.doe@example.com (synthetic), painted once at heading size and once as thumbnail text"
+    "EMAIL": "jane.doe@example.com (heading and 10px thumbnail), ops@example.com (8px), support@example.com (12px), billing@example.com (16px) -- all synthetic, example.com is reserved for documentation"
   }
 }
