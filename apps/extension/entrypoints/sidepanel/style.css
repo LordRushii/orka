@@ -8,6 +8,18 @@
   box-sizing: border-box;
 }
 
+/*
+   The side panel is a fixed-height surface, and the panel's layout depends on
+   it: the conversation scrolls while the composer and the local evidence keep
+   their own space (App.css `.panel`). Without a full-height chain the thread
+   never becomes the scroll container and the audit scrolls out of view.
+*/
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   margin: 0;
   min-width: 320px;

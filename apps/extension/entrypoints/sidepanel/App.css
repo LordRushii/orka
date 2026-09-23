@@ -1,8 +1,211 @@
+/*
+   The panel is a full-height column: the conversation takes the leftover
+   space and scrolls, while the composer and the local-evidence section keep
+   their own space. That split is the Phase 8 layout requirement -- the audit
+   must stay visible while a step is being decided, so it cannot live inside
+   the thread.
+*/
 .panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
+  gap: 10px;
+  padding: 12px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.panel__status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.panel__status-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  margin-right: 8px;
+}
+
+.panel__thread {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 2px;
+}
+
+.panel__composer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 10px;
+  background: #1f2126;
+  border: 1px solid #2c2f36;
+}
+
+/* The local evidence: visible for the whole session, never scrolled away
+   with the conversation, and bounded so it can never crowd out the thread. */
+.evidence {
+  flex: 0 0 auto;
+  max-height: 44vh;
+  overflow-y: auto;
+  padding-top: 8px;
+  border-top: 1px solid #2c2f36;
+}
+
+.evidence__inner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.evidence .audit img {
+  max-height: 150px;
+}
+
+.card h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+/* The conversation. */
+.thread {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.turn {
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.turn--user {
+  align-self: flex-end;
+  max-width: 88%;
+  background: #1d3b66;
+  border: 1px solid #2b5286;
+  color: #e8f1ff;
+}
+
+/* Decisions and answers are the user's too, but quieter than a task. */
+.turn--user-decision,
+.turn--user-answer {
+  background: #24272d;
+  border-color: #33363d;
+  color: #d4d7dc;
+}
+
+.turn--orka {
+  background: #1f2126;
+  border: 1px solid #2c2f36;
+}
+
+.turn--note {
+  background: transparent;
+  border-style: dashed;
+  color: #9aa0a6;
+}
+
+.turn--error {
+  background: #2a1416;
+  border-color: #45191c;
+}
+
+/* A turn waiting on the user is the one thing that must not be missed. */
+.turn--awaiting {
+  border-color: #4c8bf5;
+  box-shadow: 0 0 0 1px #1d3b66 inset;
+}
+
+.turn--result-completed {
+  border-color: #1c5a3f;
+}
+.turn--result-stopped {
+  border-color: #4a3d0f;
+}
+.turn--result-failed {
+  border-color: #45191c;
+}
+
+.turn__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.turn__title {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.turn__draft {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0;
+}
+
+/*
+   The drafted value, whole. No ellipsis, no line clamp, no max-height that
+   quietly eats the end: it wraps and scrolls, so what the user approves is
+   what they can read.
+*/
+.turn__value {
+  margin: 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #33363d;
+  background: #16171b;
+  color: #e6e6e6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.turn__outcome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.turn textarea {
+  width: 100%;
+  margin: 6px 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #33363d;
+  background: #16171b;
+  color: #e6e6e6;
+  resize: vertical;
 }
 
 .panel__header h1 {

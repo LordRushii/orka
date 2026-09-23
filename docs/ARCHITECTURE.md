@@ -39,6 +39,7 @@ The project uses deep modules: callers use small, stable interfaces while the co
 | Provider Adapter | `plan(observation, config): ProviderResult` | Hides OpenAI-compatible, Anthropic, DeepSeek, and LM Studio differences. |
 | Safe Action Executor | `execute(plan, context): ExecutionRun`, `stop(reason): void` | Revalidates each target on the live page, enforces policy and confirmation, performs bounded actions, and reports safe outcomes. `ExecutionRun` carries the per-action outcomes *and* the terminal status, so no caller has to infer why a run ended. |
 | Local Reporting | `measure(phase, work): Promise<T>`, `describeOutboundRequest(body): OutboundView`, `summarizeConfidenceBands(detections)` | Produces the demo's local evidence: aggregated phase timings, the request described by shape, and the audit view's confidence bands and model versions. Numbers and field names only -- no module here has a field for page content. |
+| Chat Transcript | `reduceTranscript(turns, event, { round }): ChatTurn[]` | Pure view over the session events the panel already receives: one turn per proposed step, prompt, outcome, and ending. Extension-local -- it has no path to the gateway, and it never decides anything. |
 
 ## On-device privacy pipeline
 
@@ -141,6 +142,34 @@ the audit panel, because a synthetic recognizer cannot produce an honest wall cl
 
 `docs/PHASE-5-DEMO.md` is the runbook; `docs/PHASE-5-HARDENING.md` maps each hardening item to the
 test that verifies it, and says plainly which ones need a person.
+
+## Side panel
+
+The panel is **a conversation, not a form**. A user turn states a task in plain language; each Orka
+turn is one event -- a proposed step, a prompt, an outcome, or the ending -- appended in the order
+it happened. The controls that gate a run are embedded **in the turn that needs them** (approve the
+step; allow once / deny and stop on a confirmation; continue / stop here on a planner question),
+because a prompt detached from the step it belongs to is a prompt people answer without knowing
+what they are answering.
+
+Two things are load-bearing here:
+
+- **The transcript is a view, not a second state machine.** `reduceTranscript`
+  (`apps/extension/shared/chatTranscript.ts`) is a pure reducer over the same `ExtensionMessage`
+  union the panel already handles, so `TaskSession` stays the only thing that decides what may
+  happen. `ChatTurn` is extension-local and never crosses the gateway: `PlanRequest`/`PlanResponse`
+  are unchanged, called once per round. The thread is released with the session (dismiss, or a new
+  task), so a drafted value cannot outlive the run it belonged to.
+- **A step's review turn shows the drafted value in full.** The executor's `reason` clips it at 80
+  characters (`executorPolicy.ts` `truncate`), which is right for a log line and useless for a
+  decision; the turn carries `action.value` whole, in its own block, untruncated and without a line
+  clamp. A rendering test asserts the printed value equals the drafted string.
+
+**The local evidence stays outside the conversation.** Local audit and What left this device are a
+persistent section with its own bounded height: the thread is the flexible region that scrolls, and
+the evidence does not scroll away with it. A person deciding on a step can always look down and see
+what was redacted and what left the machine, at the moment they are deciding. Both sections render
+even when empty, so "nothing yet" is never mistaken for a missing panel.
 
 ## Hardware adaptivity
 
