@@ -152,10 +152,11 @@ describe("chat thread: what a person actually reads", () => {
   });
 });
 
-describe("panel layout: the evidence is never folded into the conversation", () => {
+describe("panel layout: the evidence sits below the conversation in its own dropdowns", () => {
   test("the audit and the outbound view render as their own section, outside the thread", () => {
     // Server rendering runs no effects, so this needs no browser APIs: it is
-    // the panel's structure, which is the whole claim.
+    // the panel's structure, which is the whole claim. `<details>` still emits
+    // its inner markup when closed, so the content assertions hold.
     const markup = renderToStaticMarkup(<App />);
 
     const threadAt = markup.indexOf('class="panel__thread"');
@@ -163,26 +164,30 @@ describe("panel layout: the evidence is never folded into the conversation", () 
     expect(threadAt).toBeGreaterThanOrEqual(0);
     expect(evidenceAt).toBeGreaterThan(threadAt);
 
-    // Both sections are present even before anything has happened, so an empty
-    // audit reads as "nothing yet" rather than as a missing panel.
+    // Both dropdowns are present even before anything has happened, so an empty
+    // audit reads as "nothing yet" rather than as a missing section.
     expect(markup).toContain("Local audit");
     expect(markup).toContain("What left this device");
-    expect(markup).toContain("Nothing has been scanned yet.");
+    expect(markup).toContain("Nothing scanned yet.");
   });
 
-  test("the thread is the flexible, scrolling region and the evidence keeps a bounded one", () => {
-    // The layout requirement is a CSS fact, so it is asserted as one: the audit
-    // must not be the thing that grows or scrolls away when the conversation
-    // does, or it stops being visible while a step is being decided.
+  test("the chat scrolls on top; settings, metrics and evidence sit in a separate region below", () => {
+    // The layout requirement is a CSS fact, so it is asserted as one: the panel
+    // itself does not scroll, the chat thread is its own scroll container on
+    // top, and the secondary drawers keep their own bounded region below rather
+    // than being folded into the conversation.
     const css = readFileSync(new URL("../entrypoints/sidepanel/App.css", import.meta.url), "utf8");
 
+    const panelRule = ruleFor(css, ".panel");
     const threadRule = ruleFor(css, ".panel__thread");
-    const evidenceRule = ruleFor(css, ".evidence");
+    const drawersRule = ruleFor(css, ".panel__drawers");
+    const composerRule = ruleFor(css, ".panel__composer");
 
+    expect(panelRule).toContain("overflow: hidden");
     expect(threadRule).toContain("flex: 1 1 auto");
     expect(threadRule).toContain("overflow-y: auto");
-    // Bounded and fixed: it neither grows to eat the thread nor shrinks away.
-    expect(evidenceRule).toContain("flex: 0 0 auto");
-    expect(evidenceRule).toContain("max-height");
+    expect(drawersRule).toContain("flex: 0 0 auto");
+    expect(drawersRule).toContain("overflow-y: auto");
+    expect(composerRule).toContain("flex: 0 0 auto");
   });
 });

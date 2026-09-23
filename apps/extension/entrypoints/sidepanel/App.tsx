@@ -95,8 +95,6 @@ function App() {
   } = useTaskSession();
   const [task, setTask] = useState("");
   const [runtimeOverride, setRuntimeOverride] = useState<RuntimeOverride>("auto");
-  const [showSettings, setShowSettings] = useState(false);
-  const [showValues, setShowValues] = useState(false);
   const [form, setForm] = useState(settings);
   const [answer, setAnswer] = useState("");
 
@@ -153,17 +151,7 @@ function App() {
   return (
     <main className="panel">
       <header className="panel__header">
-        <div>
-          <h1>Orka</h1>
-          <p className="panel__subtitle">On-device privacy browser agent</p>
-        </div>
-        <button
-          type="button"
-          className="button button--link"
-          onClick={() => setShowSettings((open) => !open)}
-        >
-          {showSettings ? "Hide settings" : "Settings"}
-        </button>
+        <h1>Orka</h1>
       </header>
 
       <section className="panel__status">
@@ -201,8 +189,98 @@ function App() {
         )}
       </section>
 
-      {showSettings && (
-        <section className="card">
+      <ChatThread
+        transcript={transcript}
+        answer={answer}
+        onAnswerChange={setAnswer}
+        onApprove={() => void approve()}
+        onDecide={(approved, given) => void decide(approved, given)}
+        onStop={() => void stop()}
+      />
+
+      <section className="panel__composer">
+        <label className="field">
+          <span className="field__label">Your task</span>
+          <textarea
+            value={task}
+            disabled={started}
+            onChange={(event) => setTask(event.target.value)}
+            onKeyDown={(event) => {
+              // Enter starts the task; Shift+Enter keeps the newline, because a
+              // task can be a sentence or two.
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                submitTask();
+              }
+            }}
+            placeholder="e.g. Reply to this email: we'll do the meeting Monday."
+            rows={2}
+          />
+        </label>
+        <div className="card--actions">
+          <button
+            type="button"
+            className="button button--primary"
+            disabled={!canStart}
+            onClick={() => void startTask()}
+          >
+            {state === "idle" ? "Start task" : "Start new task"}
+          </button>
+        </div>
+        <details className="drawer">
+          <summary>Private values</summary>
+          <div className="drawer__body">
+            {privateValues.map((row, index) => (
+              <div className="value-row" key={index}>
+                <input
+                  type="text"
+                  value={row.name}
+                  placeholder="PHONE_1"
+                  aria-label={`Private value ${index + 1} name`}
+                  disabled={started}
+                  onChange={(event) => updateRow(index, { name: event.target.value })}
+                />
+                <input
+                  type="text"
+                  value={row.value}
+                  placeholder="value"
+                  aria-label={`Private value ${index + 1}`}
+                  autoComplete="off"
+                  disabled={started}
+                  onChange={(event) => updateRow(index, { value: event.target.value })}
+                />
+                <button
+                  type="button"
+                  className="button button--ghost-neutral"
+                  disabled={started || privateValues.length === 1}
+                  onClick={() => setPrivateValues((rows) => rows.filter((_, position) => position !== index))}
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            <div className="card--actions">
+              <button
+                type="button"
+                className="button button--ghost-neutral"
+                disabled={started || privateValues.length >= 10}
+                onClick={() => setPrivateValues((rows) => [...rows, EmptyValueRow()])}
+              >
+                Add value
+              </button>
+            </div>
+            <p className="panel__footnote">
+              Mention a value as <code>[PHONE_1]</code>. Never sent to the planner; dropped when the
+              task ends.
+            </p>
+          </div>
+        </details>
+      </section>
+
+      <div className="panel__drawers">
+      <details className="drawer">
+        <summary>Settings</summary>
+        <div className="drawer__body">
           <label className="field">
             <span className="field__label">Provider</span>
             <select
@@ -223,8 +301,8 @@ function App() {
           </label>
           {isCloud && (
             <p className="notice">
-              The redacted screenshot and element list leave this machine for this provider. The
-              original capture and detection map never do.
+              The redacted screenshot and element list leave this machine. The original capture and
+              detection map never do.
             </p>
           )}
 
@@ -292,10 +370,7 @@ function App() {
             />
             <span className="field__label">Allow drafting messages for my review.</span>
           </label>
-          <p className="panel__footnote">
-            Off by default. When on, Orka may draft a message and propose sending it -- you still
-            confirm every send on the fully rendered draft.
-          </p>
+          <p className="panel__footnote">You still confirm every send on the full draft.</p>
           <div className="card--actions">
             <button type="button" className="button button--primary" onClick={() => void saveSettings(form)}>
               Save
@@ -305,179 +380,69 @@ function App() {
             </button>
           </div>
           {gatewayStatus && <p className="meta">{gatewayStatus}</p>}
-          <p className="panel__footnote">
-            Provider API keys live in the gateway's environment, never in this extension. Only the
-            gateway token is stored here.
-          </p>
-        </section>
-      )}
+          <p className="panel__footnote">API keys live in the gateway; only the gateway token is stored here.</p>
+        </div>
+      </details>
 
-      <ChatThread
-        transcript={transcript}
-        answer={answer}
-        onAnswerChange={setAnswer}
-        onApprove={() => void approve()}
-        onDecide={(approved, given) => void decide(approved, given)}
-        onStop={() => void stop()}
-        footer={
-          metrics ? (
-            <section className="card">
-              <div className="status-row">
-                <h2>This run, measured locally</h2>
-                <span className="meta">
-                  {METRIC_PHASE_LABEL["capture"]} to {formatMs(metrics.totalMs)} in total
-                </span>
-              </div>
-              <ul className="plan metrics__list">
-                {metrics.samples.map((sample) => (
-                  <li key={sample.phase} className="plan__item">
-                    <div className="plan__head">
-                      <span className="plan__type">
-                        {METRIC_PHASE_LABEL[sample.phase as MetricPhase]}
-                      </span>
-                      <span className="meta">
-                        {sample.count > 1 ? `${sample.count} × ` : ""}
-                        {formatMs(sample.ms)}
-                      </span>
-                    </div>
+      {metrics && (
+        <details className="drawer">
+          <summary>
+            This run, measured locally
+            <span className="meta">{formatMs(metrics.totalMs)} total</span>
+          </summary>
+          <div className="drawer__body">
+            <ul className="plan metrics__list">
+              {metrics.samples.map((sample) => (
+                <li key={sample.phase} className="plan__item">
+                  <div className="plan__head">
+                    <span className="plan__type">
+                      {METRIC_PHASE_LABEL[sample.phase as MetricPhase]}
+                    </span>
+                    <span className="meta">
+                      {sample.count > 1 ? `${sample.count} × ` : ""}
+                      {formatMs(sample.ms)}
+                    </span>
+                  </div>
+                </li>
+              ))}
+              {metrics.samples.length === 0 && (
+                <li className="plan__item">
+                  <div className="plan__detail">No phase has finished yet.</div>
+                </li>
+              )}
+            </ul>
+            <p className="meta">
+              Runtime {metrics.runtime}
+              {metrics.resource ? ` · Local JS heap ${metrics.resource.heapUsedMb} MB` : ""}
+              {` · ${metrics.categoryCounts.length} categories redacted`}
+            </p>
+            <div className="audit__summary">
+              <strong>SIH weights, as the score is defined</strong>
+              <ul className="metrics__weights">
+                {SIH_WEIGHTS.map((entry) => (
+                  <li key={entry.id}>
+                    <span className="meta">
+                      {Math.round(entry.weight * 100)}% · {entry.label}
+                    </span>
+                    <span className={`chip chip--${entry.measurableLocally ? "low" : "medium"}`}>
+                      {entry.measurableLocally ? "measured here" : "not measurable locally"}
+                    </span>
+                    {!entry.measurableLocally && <span className="meta"> {entry.note}</span>}
                   </li>
                 ))}
-                {metrics.samples.length === 0 && (
-                  <li className="plan__item">
-                    <div className="plan__detail">No phase has finished yet.</div>
-                  </li>
-                )}
               </ul>
-              <p className="meta">
-                Runtime {metrics.runtime}
-                {metrics.resource ? ` · Local JS heap ${metrics.resource.heapUsedMb} MB` : ""}
-                {` · ${metrics.categoryCounts.length} categories redacted`}
-              </p>
-              <div className="audit__summary">
-                <strong>SIH weights, as the score is defined</strong>
-                <ul className="metrics__weights">
-                  {SIH_WEIGHTS.map((entry) => (
-                    <li key={entry.id}>
-                      <span className="meta">
-                        {Math.round(entry.weight * 100)}% · {entry.label}
-                      </span>
-                      <span className={`chip chip--${entry.measurableLocally ? "low" : "medium"}`}>
-                        {entry.measurableLocally ? "measured here" : "not measurable locally"}
-                      </span>
-                      {!entry.measurableLocally && <span className="meta"> {entry.note}</span>}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <p className="panel__footnote">
-                Timings are this device's own numbers, and two of the five weights are all a browser
-                can honestly score without labelled data. The rest are gated by the checked-in
-                benchmark corpus; nothing here is an estimate dressed as a measurement.
-              </p>
-            </section>
-          ) : undefined
-        }
-      />
-
-      <section className="panel__composer">
-        <label className="field">
-          <span className="field__label">Your task</span>
-          <textarea
-            value={task}
-            disabled={started}
-            onChange={(event) => setTask(event.target.value)}
-            onKeyDown={(event) => {
-              // Enter starts the task; Shift+Enter keeps the newline, because a
-              // task can be a sentence or two.
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                submitTask();
-              }
-            }}
-            placeholder="e.g. Reply to this email: we'll do the meeting Monday."
-            rows={2}
-          />
-        </label>
-        <div className="card--actions">
-          <button
-            type="button"
-            className="button button--primary"
-            disabled={!canStart}
-            onClick={() => void startTask()}
-          >
-            {state === "idle" ? "Start task" : "Start new task"}
-          </button>
-          <button
-            type="button"
-            className="button button--link"
-            onClick={() => setShowValues((open) => !open)}
-          >
-            {showValues ? "Hide private values" : "Private values"}
-          </button>
-        </div>
-
-        {showValues && (
-          <div className="settings">
-            {privateValues.map((row, index) => (
-              <div className="value-row" key={index}>
-                <input
-                  type="text"
-                  value={row.name}
-                  placeholder="PHONE_1"
-                  aria-label={`Private value ${index + 1} name`}
-                  disabled={started}
-                  onChange={(event) => updateRow(index, { name: event.target.value })}
-                />
-                <input
-                  type="text"
-                  value={row.value}
-                  placeholder="value"
-                  aria-label={`Private value ${index + 1}`}
-                  autoComplete="off"
-                  disabled={started}
-                  onChange={(event) => updateRow(index, { value: event.target.value })}
-                />
-                <button
-                  type="button"
-                  className="button button--ghost-neutral"
-                  disabled={started || privateValues.length === 1}
-                  onClick={() => setPrivateValues((rows) => rows.filter((_, position) => position !== index))}
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
-            <div className="card--actions">
-              <button
-                type="button"
-                className="button button--ghost-neutral"
-                disabled={started || privateValues.length >= 10}
-                onClick={() => setPrivateValues((rows) => [...rows, EmptyValueRow()])}
-              >
-                Add value
-              </button>
             </div>
-            <p className="panel__footnote">
-              Mention a value in your task as <code>[PHONE_1]</code>. Orka types it only when the
-              plan asks for that name and you allow that step. Values stay in this browser, are
-              never sent to the planner, and are dropped when the task ends.
-            </p>
           </div>
-        )}
-      </section>
+        </details>
+      )}
 
-      <EvidencePanel
-        audit={audit}
-        observation={observation}
-        outbound={outbound}
-        onDismiss={() => void closeAudit()}
-      />
-
-      <p className="panel__footnote">
-        Orka only acts on the tab you are looking at, for at most {MAX_ROUNDS} rounds with 90 seconds
-        of active work each. Time spent waiting for your approval does not count. Stop ends the task
-        at any point. Step details name a private value by its placeholder, never by its contents.
-      </p>
+        <EvidencePanel
+          audit={audit}
+          observation={observation}
+          outbound={outbound}
+          onDismiss={() => void closeAudit()}
+        />
+      </div>
     </main>
   );
 }

@@ -5,6 +5,13 @@
    must stay visible while a step is being decided, so it cannot live inside
    the thread.
 */
+/*
+   A chat layout: the header, status and settings stay pinned at the top, the
+   composer stays pinned at the bottom, and one scroll region in between holds
+   the conversation, the metrics and the evidence. The panel itself does not
+   scroll, so the composer and an awaiting approval can never be pushed off
+   screen or overlapped -- they each keep their own reserved space.
+*/
 .panel {
   display: flex;
   flex-direction: column;
@@ -12,6 +19,33 @@
   padding: 12px;
   height: 100%;
   overflow: hidden;
+}
+
+/* The chat is the top region and its own scroll container: only the
+   conversation scrolls here. The settings/metrics/evidence drawers live in
+   their own region below (`.panel__drawers`), not folded into the chat. */
+.panel__thread {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 2px;
+}
+
+/* The secondary drawers, kept apart from the chat: settings, this run's
+   metrics, the local audit and the outbound view. Bounded with its own scroll
+   so opening several never eats the conversation above it. */
+.panel__drawers {
+  flex: 0 0 auto;
+  max-height: 42vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #2c2f36;
 }
 
 .panel__header {
@@ -36,16 +70,8 @@
   margin-right: 8px;
 }
 
-.panel__thread {
-  flex: 1 1 auto;
-  min-height: 120px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-right: 2px;
-}
-
+/* Inside the scroll region, the thread takes its content height and lets the
+   region scroll; it is no longer its own scroll container. */
 .panel__composer {
   flex: 0 0 auto;
   display: flex;
@@ -57,12 +83,13 @@
   border: 1px solid #2c2f36;
 }
 
-/* The local evidence: visible for the whole session, never scrolled away
-   with the conversation, and bounded so it can never crowd out the thread. */
+/* The local evidence now lives in collapsed drawers stacked under the composer:
+   it keeps its own space below the thread and never grows to crowd it out. */
 .evidence {
   flex: 0 0 auto;
-  max-height: 44vh;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   padding-top: 8px;
   border-top: 1px solid #2c2f36;
 }
@@ -70,10 +97,59 @@
 .evidence__inner {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
-.evidence .audit img {
+/* A dropdown: the closed row reads as one line; opening it reveals the card
+   body. Keeps the same surface as `.card` so the panel stays one material. */
+.drawer {
+  border-radius: 10px;
+  background: #1f2126;
+  border: 1px solid #2c2f36;
+}
+
+.drawer > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #e6e6e6;
+  list-style: none;
+  user-select: none;
+}
+
+.drawer > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* A caret that rotates when the drawer opens, drawn from text so it needs no asset. */
+.drawer > summary::before {
+  content: "▸";
+  color: #9aa0a6;
+  font-size: 0.8rem;
+  transition: transform 0.15s ease;
+}
+
+.drawer[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.drawer > summary .meta {
+  margin-left: auto;
+  font-weight: 400;
+}
+
+.drawer__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.drawer .audit img {
   max-height: 150px;
 }
 
