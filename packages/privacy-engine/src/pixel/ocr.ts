@@ -66,6 +66,12 @@ function toSources(tokens: OcrToken[], prefix: string, dx = 0, dy = 0): TextSour
  * Passes run sequentially: one worker owns one inference session, and a
  * partial result must never be treated as a complete scan -- any pass that
  * throws or times out fails the whole sanitization closed.
+ *
+ * KNOWN COST, tracked in issue #4: each tile is a full detect->recognize
+ * inference, and detection re-runs on every tile, so the tiled pass owns most
+ * of the scan's wall clock. The option analysis and the corpus gate that
+ * bounds any change live in
+ * `fixtures/benchmark-corpus/README.md` ("The tile cost (Fix 2)").
  */
 export async function runOcrDetection(
   recognizer: TextRecognizer,

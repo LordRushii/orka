@@ -77,6 +77,9 @@ not be traded away for it.
 
 ## The tile cost (Fix 2): what was decided and why
 
+Tracked in [issue #4](https://github.com/LordRushii/orka/issues/4); the work
+is deferred behind the phase plan, not dropped.
+
 Fix 2 is the dominant remaining term, and the brief says to choose its option
 from the Step 0 breakdown. The breakdown cannot be taken off real hardware,
 but three of the four options can be settled without it, and were:
